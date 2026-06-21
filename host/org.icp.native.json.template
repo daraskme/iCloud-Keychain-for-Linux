@@ -1,0 +1,9 @@
+{
+  "name": "org.icp.native",
+  "description": "iCloud Passwords (Linux) native messaging host",
+  "path": "__HOST_LAUNCHER__",
+  "type": "stdio",
+  "allowed_origins": [
+    "chrome-extension://__EXTENSION_ID__/"
+  ]
+}
