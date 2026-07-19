@@ -12,6 +12,30 @@
     return r.width > 0 && r.height > 0;
   }
 
+  const observedRoots = new WeakSet();
+  function observeRoot(root) {
+    if (observedRoots.has(root)) return;
+    observedRoots.add(root);
+    observer.observe(root, { childList: true, subtree: true });
+  }
+
+  function deepQueryAll(selector, root) {
+    root = root || document;
+    const out = [];
+    const walk = (node) => {
+      node.querySelectorAll(selector).forEach((el) => out.push(el));
+      node.querySelectorAll("*").forEach((el) => {
+        if (el.shadowRoot) { observeRoot(el.shadowRoot); walk(el.shadowRoot); }
+      });
+    };
+    walk(root);
+    return out;
+  }
+
+  function deepQuery(selector) {
+    return deepQueryAll(selector)[0] || null;
+  }
+
   function looksLikeUsername(el) {
     const hay = `${el.name} ${el.id} ${el.autocomplete} ${el.placeholder || ""} ${el.getAttribute("aria-label") || ""
       }`.toLowerCase();
@@ -20,11 +44,14 @@
   }
 
   function findUsernameField(pwField) {
-    const before = Array.from(document.querySelectorAll(USERNAME_SEL))
-      .filter((inp) => visible(inp)
-        && pwField.compareDocumentPosition(inp) & Node.DOCUMENT_POSITION_PRECEDING)
+    const all = deepQueryAll(USERNAME_SEL).filter(visible);
+    // Prefer a field that precedes the password field in document order. Across shadow-root
+    // boundaries compareDocumentPosition can't establish order, so fall back to any candidate.
+    const before = all
+      .filter((inp) => pwField.compareDocumentPosition(inp) & Node.DOCUMENT_POSITION_PRECEDING)
       .reverse();
-    return before.find(looksLikeUsername) || before[0] || null;
+    return before.find(looksLikeUsername) || before[0]
+      || all.find(looksLikeUsername) || all[0] || null;
   }
 
   function setValue(el, value) {
@@ -38,7 +65,7 @@
   }
 
   function fill(cred, anchor) {
-    const pw = document.querySelector(PASSWORD_SEL);
+    const pw = deepQuery(PASSWORD_SEL);
     let userField = null;
     if (anchor && anchor.type !== "password") userField = anchor;
     else if (pw) userField = findUsernameField(pw);
@@ -50,7 +77,7 @@
   // Hide My Email aliases carry no password - always fill the username/email field, never
   // the password field, even when that's the anchor that was clicked/focused.
   function fillAlias(alias, anchor) {
-    const pw = document.querySelector(PASSWORD_SEL);
+    const pw = deepQuery(PASSWORD_SEL);
     const userField = anchor && anchor.type !== "password" ? anchor : (pw ? findUsernameField(pw) : null);
     if (userField) { userField.__applepwFilled = true; setValue(userField, alias.address); }
   }
@@ -210,23 +237,37 @@
   }
 
   function scan() {
-    const pwFields = Array.from(document.querySelectorAll(PASSWORD_SEL)).filter(visible);
+    const pwFields = deepQueryAll(PASSWORD_SEL).filter(visible);
     pwFields.forEach(attach);
     const hasPassword = pwFields.length > 0;
-    document.querySelectorAll(USERNAME_SEL).forEach((el) => {
+    deepQueryAll(USERNAME_SEL).forEach((el) => {
       if (!visible(el) || el.type === "password") return;
       if (hasPassword || looksLikeUsername(el)) attach(el);
     });
   }
 
+  // deepQueryAll walks the whole tree (incl. shadow roots), so coalesce the many mutations a
+  // page emits into one scan per frame instead of scanning per record.
+  let scanScheduled = false;
+  function scheduleScan() {
+    if (scanScheduled) return;
+    scanScheduled = true;
+    requestAnimationFrame(() => { scanScheduled = false; scan(); });
+  }
+
+  const observer = new MutationObserver(scheduleScan);
+
   document.addEventListener("click", (e) => {
-    const t = e.target;
-    if (t && t.closest && t.closest("#__applepw_menu")) return;
-    if (t && t.__applepw) return;
+    // composedPath crosses shadow boundaries; e.target is retargeted to the shadow host, which
+    // would make clicks on shadow-DOM fields (Reddit) look like outside-clicks and close the menu.
+    const path = e.composedPath ? e.composedPath() : [e.target];
+    for (const t of path) {
+      if (t && t.id === "__applepw_menu") return;
+      if (t && t.__applepw) return;
+    }
     removeMenu();
   });
 
+  observer.observe(document.documentElement, { childList: true, subtree: true });
   scan();
-  new MutationObserver(scan).observe(document.documentElement,
-    { childList: true, subtree: true });
 })();

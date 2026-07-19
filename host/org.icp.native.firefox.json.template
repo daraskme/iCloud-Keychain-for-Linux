@@ -1,6 +1,6 @@
 {
   "name": "org.icp.native",
-  "description": "iCloud Passwords (Linux) native messaging host",
+  "description": "Apple Passwords native messaging host",
   "path": "__HOST_LAUNCHER__",
   "type": "stdio",
   "allowed_extensions": [
