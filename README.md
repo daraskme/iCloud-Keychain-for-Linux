@@ -1,9 +1,10 @@
 # iCloud Keychain for Linux
 
-Use your iCloud Keychain passwords on Linux - no Mac required. Sign in with your Apple ID and
+**Unofficial** client for iCloud Keychain. Sign in with your Apple ID and
 `icp` registers this computer as one of your Apple devices, then downloads your passwords into a
 private, encrypted store on your machine. A browser extension fills them in for you, just like the
-Passwords app on a Mac or iPhone. Your Hide My Email addresses show up too.
+Passwords app on a Mac or iPhone. Your Hide My Email addresses show up too. This project is a 
+reverse engineering attempt and **is not affiliated with Apple in any way**.
 
 > **Note:** Most of this project was written with AI assistance (and reviewed by a human).
 > It works with my own Apple account, but that's no guarantee it will work with yours.
