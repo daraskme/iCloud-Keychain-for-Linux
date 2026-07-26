@@ -4,7 +4,9 @@ same libsodium secret box + keyring master key as the auth session, file mode 06
 from __future__ import annotations
 
 import json
+import logging
 
+import nacl.exceptions
 import nacl.secret
 
 from .. import paths
@@ -26,7 +28,13 @@ def load_vault() -> CredentialStore:
     if not f.exists():
         return CredentialStore([])
     box = nacl.secret.SecretBox(_master_key())
-    data = json.loads(box.decrypt(f.read_bytes()).decode())
+    try:
+        data = json.loads(box.decrypt(f.read_bytes()).decode())
+    except nacl.exceptions.CryptoError:
+        logging.getLogger(__name__).warning("cannot decrypt %s with the current master key; "
+                                            "discarding it - run `icp sync` to rebuild", f)
+        f.unlink()
+        return CredentialStore([])
     creds = [Credential(domain=c.get("domain", ""), username=c.get("username", ""),
                         password=c.get("password", ""), title=c.get("title", ""),
                         mdat=c.get("mdat", 0.0))

@@ -19,6 +19,7 @@ from ..auth import grandslam as auth, icloud, session
 from ..auth.anisette import Anisette, AnisetteError
 from ..auth.device import Device
 from ..auth.gsa import GSAClient, GSAError
+from ..auth.session import SessionError
 
 ICLOUD_AUTH_TOKEN = "com.apple.gs.icloud.auth"
 
@@ -718,6 +719,9 @@ def main(argv=None) -> int:
     except KeyboardInterrupt:
         ui.err("aborted")
         return 130
+    except SessionError as e:
+        ui.err(str(e))
+        return 1
 
 
 if __name__ == "__main__":

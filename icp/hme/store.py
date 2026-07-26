@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import logging
 
+import nacl.exceptions
 import nacl.secret
 
 from .. import paths
@@ -26,5 +28,11 @@ def load_aliases() -> list[HmeAlias]:
     if not f.exists():
         return []
     box = nacl.secret.SecretBox(_master_key())
-    data = json.loads(box.decrypt(f.read_bytes()).decode())
+    try:
+        data = json.loads(box.decrypt(f.read_bytes()).decode())
+    except nacl.exceptions.CryptoError:
+        logging.getLogger(__name__).warning("cannot decrypt %s with the current master key; "
+                                            "discarding it - it will be refetched", f)
+        f.unlink()
+        return []
     return [HmeAlias(**a) for a in data.get("aliases", [])]
