@@ -38,6 +38,7 @@ def load_vault() -> CredentialStore:
     creds = [Credential(domain=c.get("domain", ""), username=c.get("username", ""),
                         password=c.get("password", ""), title=c.get("title", ""),
                         mdat=c.get("mdat", 0.0),
-                        notes=c.get("notes", ""), last_used=c.get("last_used", 0.0))
+                        notes=c.get("notes", ""), last_used=c.get("last_used", 0.0),
+                        totp=c.get("totp", ""))
              for c in data.get("credentials", [])]
     return CredentialStore(creds)

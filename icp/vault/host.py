@@ -5,6 +5,10 @@ the decrypted vault, read-only.
 Protocol (JSON):
   -> {"cmd":"ping"}                              <- {"ok":true,"count":N}
   -> {"cmd":"match","domain":"login.example.com"} <- {"ok":true,"credentials":[{...}]}
+  -> {"cmd":"totp","domain":...,"username":...}   <- {"ok":true,"totp":{"code":...}}
+
+A credential's one-time-code secret never crosses this protocol: `match` carries the code
+generated at request time, and `totp` re-generates it when the browser's copy has rolled over.
 """
 
 from __future__ import annotations
@@ -17,6 +21,8 @@ import re
 import struct
 import sys
 
+from .. import totp as totp_codes
+
 
 @dataclasses.dataclass(frozen=True)
 class Credential:
@@ -27,6 +33,7 @@ class Credential:
     mdat: float = 0.0
     notes: str = ""
     last_used: float = 0.0
+    totp: str = ""
 
     @property
     def recency(self) -> float:
@@ -35,7 +42,11 @@ class Credential:
     def public_dict(self) -> dict:
         return {"domain": self.domain, "username": self.username,
                 "password": self.password, "title": self.title, "mdat": self.mdat,
-                "notes": self.notes, "last_used": self.last_used}
+                "notes": self.notes, "last_used": self.last_used, "totp": self.totp}
+
+    def wire_dict(self) -> dict:
+        """The extension's view: the `totp` URI is replaced by a code generated now."""
+        return {**self.public_dict(), "totp": totp_codes.generate(self.totp) or None}
 
 
 _APPLE_EPOCH = 978307200  # 2001-01-01 UTC in unix seconds (Apple "absolute time" origin)
@@ -131,7 +142,7 @@ _AGRP_PASSKEY = "com.apple.webkit.webauthn"
 _SIDECAR_LABEL_PREFIX = "password manager metadata:"
 # Allowlist: unknown keys are dropped. `s_hi` is excluded deliberately - it holds previous
 # passwords in cleartext, which have no autofill use and do not belong in the vault.
-_SIDECAR_KEEP = {"notes", "title", "ctxt"}
+_SIDECAR_KEEP = {"notes", "title", "ctxt", "totp"}
 _PLUMBING_KEYSETS = ({"tlkUUID", "srcIdentity"}, {"viewName", "encryptedData"})
 _CARD_KEYS = {"CardNumber", "FPANHash", "PrimaryAccountIdentifier", "CardSecurityCode"}
 
@@ -320,6 +331,7 @@ class CredentialStore:
                 domain=domain, username=username, password=pw, title=title, mdat=mdat,
                 notes=_sidecar_text(side.get("notes")),
                 last_used=_sidecar_last_used(side.get("ctxt")),
+                totp=totp_codes.uri_from_sidecar(side.get("totp")),
             ))
         return cls(creds)
 
@@ -354,8 +366,14 @@ def handle(request: dict, store: CredentialStore, aliases: list | None = None) -
         if not domain:
             return {"ok": False, "error": "missing domain"}
         matched = match_aliases(domain, aliases or [])
-        return {"ok": True, "credentials": [c.public_dict() for c in store.match(domain)],
+        return {"ok": True, "credentials": [c.wire_dict() for c in store.match(domain)],
                 "aliases": [a.public_dict() for a in matched]}
+    if cmd == "totp":
+        domain, username = request.get("domain", ""), request.get("username", "")
+        for c in store.match(domain):
+            if c.username == username and c.totp:
+                return {"ok": True, "totp": totp_codes.generate(c.totp)}
+        return {"ok": False, "error": "no code for that login"}
     return {"ok": False, "error": f"unknown cmd {cmd!r}"}
 
 

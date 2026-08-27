@@ -20,6 +20,7 @@ from ..auth.anisette import Anisette, AnisetteError
 from ..auth.device import Device
 from ..auth.gsa import GSAClient, GSAError
 from ..auth.session import SessionError
+from ..totp import generate as totp_generate
 
 ICLOUD_AUTH_TOKEN = "com.apple.gs.icloud.auth"
 
@@ -376,7 +377,7 @@ def _show_plain(store, args) -> int:
         user_w = min(max(len(c.username) for c in creds), 40)
         for c in creds:
             pw = c.password if args.show_passwords else "******"
-            ui.out(f"{c.domain:<{dom_w}}  {c.username:<{user_w}}  {pw}")
+            ui.out(f"{c.domain:<{dom_w}}  {c.username:<{user_w}}  {pw}{_totp_suffix(c)}")
         ui.step(f"{len(creds)} credential(s).")
 
     if aliases:
@@ -389,6 +390,14 @@ def _show_plain(store, args) -> int:
             ui.out(f"{a.label:<{label_w}}  {a.address}{state}")
         ui.step(f"{len(aliases)} alias(es).")
     return 0
+
+
+def _totp_suffix(c) -> str:
+    """The trailing `123456 (12s)` column for a credential carrying a verification code."""
+    code = totp_generate(c.totp)
+    if not code:
+        return ""
+    return f"  {code['code']} ({max(0, int(code['expires'] - time.time()))}s)"
 
 
 def _printable(s: str) -> str:
@@ -413,6 +422,7 @@ def _run_tui(store) -> int:
     def draw(stdscr):
         curses.curs_set(0)
         stdscr.keypad(True)
+        stdscr.timeout(1000)  # redraw every second so the code countdowns tick
 
         def put(y, x, s, attr=curses.A_NORMAL):
             # addnstr raises curses.error on the bottom-right cell and other edges; a draw glitch
@@ -441,12 +451,15 @@ def _run_tui(store) -> int:
             for idx, c in enumerate(shown[offset:offset + view_h]):
                 i = offset + idx
                 pw = c.password if id(c) in revealed else "******"
-                line = _printable(f"{c.domain:<{dom_w}}  {c.username:<{user_w}}  {pw}")
+                line = _printable(
+                    f"{c.domain:<{dom_w}}  {c.username:<{user_w}}  {pw}{_totp_suffix(c)}")
                 put(3 + idx, 0, line, curses.A_REVERSE if i == sel else curses.A_NORMAL)
             put(h - 1, 0, footer, curses.A_DIM)
             stdscr.refresh()
 
             ch = stdscr.getch()
+            if ch == -1:  # timeout: just redraw
+                continue
             if ch == 27:  # Esc: clear the query, or quit when it is already empty
                 if query:
                     query, sel, offset = "", 0, 0

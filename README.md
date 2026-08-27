@@ -70,6 +70,12 @@ Opens a full-screen list - start typing to filter, **Enter** to reveal a passwor
 icp show github
 ```
 
+## Verification codes
+
+If a login has an authenticator code set up in the Passwords app, `icp` picks it up too. `icp show`
+lists the current 6-digit code next to the login with the seconds left before it changes, counting
+down live.
+
 ## Set up the browser extension
 
 The `extension/` folder works in Chromium based browsers and Firefox.
@@ -108,6 +114,10 @@ If you ever move this project to a different folder, just run `host/install.sh` 
   with matching logins. Click one to fill it in (it handles email-first pages like Google too).
 - Start typing to narrow the list.
 - Or click the extension's toolbar icon and pick a login there.
+- On a **two-factor code** box, the dropdown offers the current code instead - click to fill it.
+  Pages that split the code across six separate boxes are filled a digit at a time. The code is
+  always regenerated at the moment you click, so it is never a stale one, and the toolbar popup
+  shows the code next to each login (click it to copy).
 
 ## Keeping your passwords up to date
 

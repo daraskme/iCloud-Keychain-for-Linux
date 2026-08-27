@@ -16,14 +16,12 @@ function nativeRequest(payload) {
   });
 }
 
+const FORWARDED = new Set(["ping", "match", "totp"]);
+
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-  if (message && message.cmd === "match") {
-    nativeRequest({ cmd: "match", domain: message.domain }).then(sendResponse);
+  if (message && FORWARDED.has(message.cmd)) {
+    nativeRequest(message).then(sendResponse);
     return true; // async
-  }
-  if (message && message.cmd === "ping") {
-    nativeRequest({ cmd: "ping" }).then(sendResponse);
-    return true;
   }
   sendResponse({ ok: false, error: "unknown message" });
   return false;

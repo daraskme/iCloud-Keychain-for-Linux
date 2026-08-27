@@ -19,51 +19,45 @@ function send(msg) {
     chrome.runtime.sendMessage(msg, (r) => resolve(r || { ok: false, error: "no response" })));
 }
 
-function fillOnPage(cred) {
-  chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-    if (!tabs[0]) return;
-    chrome.scripting.executeScript({
-      target: { tabId: tabs[0].id },
-      func: (c) => {
-        const set = (el, v) => {
-          if (!el || v == null) return;
-          const proto = el.tagName === "TEXTAREA"
-            ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
-          Object.getOwnPropertyDescriptor(proto, "value").set.call(el, v);
-          el.dispatchEvent(new Event("input", { bubbles: true }));
-          el.dispatchEvent(new Event("change", { bubbles: true }));
-        };
-        const eligible = (el) =>
-          el && !el.disabled && !el.readOnly && el.offsetParent !== null;
-        const looksLikeUsername = (el) => {
-          const hay = `${el.name} ${el.id} ${el.autocomplete} ${el.placeholder || ""} ${
-            el.getAttribute("aria-label") || ""}`.toLowerCase();
-          return /user|email|e-mail|login|account|identif|phone|tel\b/.test(hay)
-            || el.type === "email" || el.type === "username";
-        };
-        const pw = Array.from(document.querySelectorAll('input[type="password"]')).find(eligible)
-          || null;
-        const cands = Array.from(document.querySelectorAll(
-          'input[type="text"], input[type="email"], input[type="tel"], input[type="username"], input:not([type])'))
-          .filter(eligible);
-        let user = null;
-        if (pw) {
-          const before = cands
-            .filter((el) => pw.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_PRECEDING)
-            .reverse();
-          user = before.find(looksLikeUsername) || before[0] || null;
-        } else {
-          const active = document.activeElement;
-          user = (eligible(active) && cands.includes(active) && looksLikeUsername(active))
-            ? active
-            : (cands.find(looksLikeUsername) || (cands.length === 1 ? cands[0] : null));
-        }
-        set(user, c.username);
-        set(pw, c.password);
-      },
-      args: [cred],
-    });
+function activeTabId() {
+  return new Promise((resolve) =>
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => resolve(tabs[0] && tabs[0].id)));
+}
+
+// The content script owns field detection, so popup fills go through it rather than repeating
+// the heuristics here. Frame 0 only, matching where a login form almost always lives.
+async function fillOnPage(cred) {
+  const tabId = await activeTabId();
+  if (tabId != null) chrome.tabs.sendMessage(tabId, { cmd: "fill", credential: cred }, { frameId: 0 });
+}
+
+async function copyCode(cred) {
+  const fresh = await send({ cmd: "totp", domain: await activeDomain(), username: cred.username });
+  if (fresh.ok) cred.totp = fresh.totp;
+  await navigator.clipboard.writeText(cred.totp.code);
+}
+
+// Repaint every second so the countdowns stay honest while the popup is open.
+const tickers = [];
+setInterval(() => tickers.forEach((paint) => paint()), 1000);
+
+function codeChip(cred) {
+  const el = document.createElement("div");
+  el.className = "code";
+  el.title = "Copy verification code";
+  let copied = 0;
+  const paint = () => {
+    if (Date.now() < copied) return;
+    const left = Math.max(0, Math.round(cred.totp.expires - Date.now() / 1000));
+    el.textContent = `${cred.totp.code} ${left}s`;
+  };
+  paint();
+  tickers.push(paint);
+  el.addEventListener("click", (e) => {
+    e.stopPropagation();
+    copyCode(cred).then(() => { copied = Date.now() + 1500; el.textContent = "Copied"; });
   });
+  return el;
 }
 
 function avatarText(c) {
@@ -99,6 +93,7 @@ async function main() {
     div.querySelector(".avatar").textContent = avatarText(c);
     div.querySelector(".u").textContent = c.username || "(no username)";
     div.querySelector(".d").textContent = c.title || c.domain;
+    if (c.totp) div.insertBefore(codeChip(c), div.querySelector(".fill"));
     div.addEventListener("click", () => { fillOnPage(c); window.close(); });
     listEl.appendChild(div);
   }

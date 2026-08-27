@@ -5,6 +5,8 @@
   // Username-ish inputs. Excludes password (handled separately) and obvious non-login types.
   const USERNAME_SEL =
     'input[type="text"], input[type="email"], input[type="tel"], input[type="username"], input:not([type])';
+  const OTP_SEL = 'input[type="text"], input[type="tel"], input[type="number"], input:not([type])';
+  const SEGMENT_SEL = 'input[maxlength="1"]';
 
   function visible(el) {
     if (!el || el.disabled || el.readOnly) return false;
@@ -43,6 +45,51 @@
       || el.type === "email" || el.type === "username";
   }
 
+
+  const OTP_KEYWORDS = [
+    "2facode", "approvalscode", "authcode", "authentication", "mfacode", "onetimecode",
+    "onetimepassword", "otccode", "otcconfirmation", "otpcode", "secondfactor", "securitycode",
+    "smscode", "totp", "totpcode", "twofa", "twofactor", "twofactorcode", "verificationcode",
+    "verifycode",
+  ];
+  const OTP_NEVER = ["recovery", "backup"];
+  const OTP_AMBIGUOUS = ["code", "otc", "otp", "2fa", "mfa", "pin", "token", "challenge"];
+  const OTP_EXCLUDE = [
+    "zip", "postal", "postcode", "coupon", "promo", "discount", "referral",
+    "invite", "area", "country", "currency", "barcode", "encode", "decode", "search", "captcha",
+    "user", "email", "phone", "address",
+  ];
+  const OTP_TYPES = new Set(["text", "tel", "number"]);
+
+  function fieldWords(el) {
+    return `${el.name} ${el.id} ${el.autocomplete} ${el.placeholder || ""} ${
+      el.getAttribute("aria-label") || ""} ${el.className}`.toLowerCase().replace(/[\s_-]/g, "");
+  }
+
+  function namedLikeOtp(el) {
+    const words = fieldWords(el);
+    if (OTP_NEVER.some((w) => words.includes(w))) return false;
+    if ((el.autocomplete || "").toLowerCase().includes("one-time-code")) return true;
+    if (!OTP_TYPES.has(el.type)) return false;
+    if (OTP_EXCLUDE.some((w) => words.includes(w))) return false;
+    if (OTP_KEYWORDS.some((w) => words.includes(w))) return true;
+    if (!OTP_AMBIGUOUS.some((w) => words.includes(w))) return false;
+    return (el.maxLength >= 4 && el.maxLength <= 10) || el.inputMode === "numeric"
+      || /0-9|\d/.test(el.pattern || "");
+  }
+
+  // A row of one-character boxes is a code entry even when nothing names the individual inputs.
+  function segmentGroup(el) {
+    if (el.maxLength !== 1) return null;
+    const group = deepQueryAll(SEGMENT_SEL, el.form || el.getRootNode())
+      .filter((f) => visible(f) && f.maxLength === 1 && OTP_TYPES.has(f.type));
+    return group.length >= 4 && group.length <= 10 && group.includes(el) ? group : null;
+  }
+
+  function isOtpField(el) {
+    return namedLikeOtp(el) || !!segmentGroup(el);
+  }
+
   function findUsernameField(pwField) {
     const all = deepQueryAll(USERNAME_SEL).filter(visible);
     // Prefer a field that precedes the password field in document order. Across shadow-root
@@ -72,6 +119,34 @@
     // Mark these as programmatically filled so the 'input' they emit doesn't re-open the menu.
     if (userField && cred.username) { userField.__applepwFilled = true; setValue(userField, cred.username); }
     if (pw && cred.password) { pw.__applepwFilled = true; setValue(pw, cred.password); }
+    if (cred.totp) {
+      const otp = deepQueryAll(OTP_SEL).filter(visible).find(isOtpField);
+      if (otp) fillCode(cred, otp);
+    }
+  }
+
+  // The code the host generated expires on its own clock, so re-ask before filling a stale one.
+  function currentCode(cred) {
+    if (!cred.totp) return Promise.resolve("");
+    if (Date.now() / 1000 < cred.totp.expires - 1) return Promise.resolve(cred.totp.code);
+    return send({ cmd: "totp", domain: location.hostname, username: cred.username }).then((r) => {
+      if (r && r.ok && r.totp) cred.totp = r.totp;
+      return cred.totp.code;
+    });
+  }
+
+  function fillCode(cred, anchor) {
+    return currentCode(cred).then((code) => {
+      if (!code) return;
+      const group = segmentGroup(anchor);
+      if (group && code.length >= group.length) {
+        group.forEach((el, i) => { el.__applepwFilled = true; setValue(el, code[i]); });
+        group[group.length - 1].focus();
+        return;
+      }
+      anchor.__applepwFilled = true;
+      setValue(anchor, code);
+    });
   }
 
   // Hide My Email aliases carry no password - always fill the username/email field, never
@@ -96,9 +171,37 @@
     return `${years} year${years === 1 ? "" : "s"} ago`;
   }
 
+  let tickers = [];
+  let ticker = null;
+
   function removeMenu() {
+    if (ticker) { clearInterval(ticker); ticker = null; }
+    tickers = [];
     const m = document.getElementById("__applepw_menu");
     if (m) m.remove();
+  }
+
+  function refreshCode(cred) {
+    if (cred.__refreshing) return;
+    cred.__refreshing = true;
+    send({ cmd: "totp", domain: location.hostname, username: cred.username }).then((r) => {
+      cred.__refreshing = false;
+      if (r && r.ok && r.totp) cred.totp = r.totp;
+    });
+  }
+
+  // A countdown line that repaints each second and pulls a fresh code once this one rolls over.
+  function codeLine(cred, style) {
+    const el = document.createElement("div");
+    Object.assign(el.style, style);
+    const paint = () => {
+      const left = Math.max(0, Math.round(cred.totp.expires - Date.now() / 1000));
+      el.textContent = `${cred.totp.code}  ${left}s`;
+      if (!left) refreshCode(cred);
+    };
+    paint();
+    tickers.push(paint);
+    return el;
   }
 
   function subLine(text) {
@@ -121,7 +224,8 @@
     return row;
   }
 
-  function showMenu(anchor, creds, aliases) {
+  // `codes` mode anchors on a one-time-code field: rows offer the code itself, not the login.
+  function showMenu(anchor, creds, aliases, codes) {
     removeMenu();
     aliases = aliases || [];
     if (!creds.length && !aliases.length) return;
@@ -145,9 +249,17 @@
       menu.appendChild(el);
     }
 
-    if (creds.length) sectionHeader("iCloud Passwords", { borderBottom: "1px solid #eee" });
+    if (creds.length) {
+      sectionHeader(codes ? "Verification code" : "iCloud Passwords",
+                    { borderBottom: "1px solid #eee" });
+    }
     for (const cred of creds) {
-      const row = menuRow(() => fill(cred, anchor));
+      const row = menuRow(() => (codes ? fillCode(cred, anchor) : fill(cred, anchor)));
+      if (codes) {
+        row.appendChild(codeLine(cred, {
+          fontSize: "17px", letterSpacing: ".12em", fontVariantNumeric: "tabular-nums",
+        }));
+      }
       const website = cred.domain || cred.title || "";
       const name = document.createElement("div");
       if (cred.username && website) {
@@ -162,6 +274,13 @@
         name.textContent = cred.username || website || "(no title)";
       }
       row.appendChild(name);
+      if (codes) {
+        menu.appendChild(row);
+        continue;
+      }
+      if (cred.totp) {
+        row.appendChild(codeLine(cred, { fontSize: "11px", color: "#0071e3" }));
+      }
       // last_used is a real use time; mdat is only the record's write time.
       const rel = relTime(cred.last_used || cred.mdat);
       if (rel) row.appendChild(subLine(`Last used ${rel}`));
@@ -180,6 +299,7 @@
       }
     }
     document.body.appendChild(menu);
+    if (tickers.length) ticker = setInterval(() => tickers.forEach((paint) => paint()), 1000);
   }
 
   // A username field's typed value narrows the list; a password field (or empty value)
@@ -209,26 +329,32 @@
 
   const EMPTY_MATCHES = { credentials: [], aliases: [] };
 
+  function send(msg) {
+    return new Promise((resolve) => {
+      if (!chrome.runtime || !chrome.runtime.id) return resolve(null);
+      chrome.runtime.sendMessage(msg, (resp) => resolve(chrome.runtime.lastError ? null : resp));
+    });
+  }
+
   let cache = null;
   function getMatches() {
     if (cache) return Promise.resolve(cache);
-    return new Promise((resolve) => {
-      if (!chrome.runtime || !chrome.runtime.id) return resolve(EMPTY_MATCHES);
-      chrome.runtime.sendMessage({ cmd: "match", domain: location.hostname }, (resp) => {
-        if (chrome.runtime.lastError) return resolve(EMPTY_MATCHES);
-        cache = resp && resp.ok
-          ? { credentials: resp.credentials || [], aliases: resp.aliases || [] }
-          : EMPTY_MATCHES;
-        resolve(cache);
-      });
+    return send({ cmd: "match", domain: location.hostname }).then((resp) => {
+      cache = resp && resp.ok
+        ? { credentials: resp.credentials || [], aliases: resp.aliases || [] }
+        : EMPTY_MATCHES;
+      return cache;
     });
   }
 
   function attach(field) {
     if (field.__applepw) return;
     field.__applepw = true;
-    const open = () => getMatches().then(({ credentials, aliases }) =>
-      showMenu(field, filterCreds(credentials, field), filterAliases(aliases, field)));
+    const open = () => getMatches().then(({ credentials, aliases }) => {
+      // A code field's typed value is digits, so it never filters the list.
+      if (isOtpField(field)) return showMenu(field, credentials.filter((c) => c.totp), [], true);
+      showMenu(field, filterCreds(credentials, field), filterAliases(aliases, field));
+    });
     field.addEventListener("focus", open);
     field.addEventListener("click", open);
     field.addEventListener("input", () => {
@@ -241,6 +367,7 @@
     const pwFields = deepQueryAll(PASSWORD_SEL).filter(visible);
     pwFields.forEach(attach);
     const hasPassword = pwFields.length > 0;
+    deepQueryAll(OTP_SEL).forEach((el) => { if (visible(el) && isOtpField(el)) attach(el); });
     deepQueryAll(USERNAME_SEL).forEach((el) => {
       if (!visible(el) || el.type === "password") return;
       if (hasPassword || looksLikeUsername(el)) attach(el);
@@ -267,6 +394,15 @@
       if (t && t.__applepw) return;
     }
     removeMenu();
+  });
+
+  chrome.runtime.onMessage.addListener((msg, _sender, respond) => {
+    if (msg && msg.cmd === "fill") {
+      removeMenu();
+      fill(msg.credential, null);
+      respond({ ok: true });
+    }
+    return false;
   });
 
   observer.observe(document.documentElement, { childList: true, subtree: true });

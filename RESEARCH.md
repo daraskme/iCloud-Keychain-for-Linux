@@ -298,9 +298,11 @@ Discovered format corrections:
    |---|---|
    | `com.apple.cfnetwork` | Safari web-form logins - **the credentials** |
    | `apple` | generic passwords, incl. AirPort/wi-fi |
-   | `com.apple.password-manager`, `.website-metadata`, `.generated-passwords` | metadata sidecar (below) |
+   | `com.apple.password-manager` | per-login metadata sidecar (below) |
+   | `com.apple.password-manager.website-metadata` | per-**site** record, a different payload entirely (below) |
+   | `com.apple.password-manager.generated-passwords` | a generated password in `pwd` - not metadata |
    | `com.apple.safari.credit-cards` | payment cards - full PAN, CVV, expiry, FPAN hash |
-   | `com.apple.webkit.webauthn` | passkeys - `v_Data` is private key material |
+   | `com.apple.webkit.webauthn` | passkeys - `v_Data` is 97 raw bytes |
    | `com.apple.ProtectedCloudStorage` (+ variants) | PCS blobs |
    | `hap.pairing`, `rapport`, `sbd`, `security.sos`, `bluetooth`, `photos`, `FinanceKit`, ... | subsystem key material and state |
 
@@ -315,29 +317,74 @@ Discovered format corrections:
 
 ### The "Password Manager Metadata" sidecar
 
-Creating a login in the Passwords app writes **two** keychain items: the login, and a sidecar
-labelled `Password Manager Metadata: <srvr> (<acct>)`. They join on `(srvr, acct)`. Apple leaves the sidecar behind, empty (`{}`), when its Notes field is cleared.
+The `password-manager*` prefix covers **three unrelated record types**, which `classify_item`
+lumps together as one "sidecar" kind:
+
+| `agrp` | scope | joins onto a login? |
+|---|---|---|
+| `com.apple.password-manager` | one per login | yes, on `(srvr, acct)` |
+| `...password-manager.website-metadata` | one per site, `acct` always blank | effectively never |
+| `...password-manager.generated-passwords` | one per generated password, payload `{pwd}` | no |
+
+Only the first is the metadata sidecar, and it is **not** written for every login - a minority of
+logins have one. Its label is exactly `Password Manager Metadata: <srvr> (<acct>)`, byte-exact
+against the record's own `srvr`/`acct` (the join key), though some carry a bare URL instead. An
+emptied sidecar decrypts to `{}` and is left behind rather than deleted, its login still live.
 
 Its `v_Data` is a binary plist:
 
 ```
-notes   the Notes field                    s_hi   password HISTORY - list of
-title   user-set custom title                     {d: date, p: PREVIOUS PASSWORD
-ctxt    {<browser-profile>: {lUsed: ...}}          (cleartext), id: uuid, t: "pwcr"}
-        ^ the real last-used time lives    s_as   save-prompt bookkeeping
-          HERE, nested - NOT at top level  wn / wn_dm / wn_dr   breach-notification dates
-        Apple absolute time (secs 2001)    passkeyEndpointsDateLastRefreshed
-                                           enrollPasskeyURL / managePasskeyURL / supportsPasskey
+notes  BYTES, not str - the Notes field       s_hi  password history - list of
+title  BYTES - user-set custom title                {d: date, p: a CLEARTEXT
+ctxt   {<profile>: {lUsed: <float>}}                PASSWORD (str), id: uuid,
+       the real last-used time lives HERE,          t: "pwcr" or "pwch", op}
+       nested - never at top level           s_as  list of {s: ...}
+       Apple absolute time (secs since 2001)  totp  the 2FA enrolment (below)
+       `<profile>` is usually the EMPTY
+       STRING, occasionally
+       "SafariProfile-<name>", which also
+       carries an `slUsed` DICT (not a
+       timestamp)
 ```
 
-`icp` merges `notes`, `title` and the nested `lUsed` (as `Credential.last_used`, which drives
-recency ordering - `mdat` is only the record's *write* time). Everything else is dropped;
-`s_hi` deliberately so, since it would put superseded cleartext passwords in the vault.
+`icp` merges `notes`, `title`, `totp` and the nested `lUsed` (as `Credential.last_used`, which
+drives recency ordering - `mdat` is only the record's *write* time). Everything else is dropped;
+`s_hi` deliberately so, since it would put cleartext passwords in the vault.
 
-**Passkeys.** Some sidecars have no login to pair with: their `acct` is a WebAuthn credential ID
-rather than a username. The passkeys themselves **do** sync, as `com.apple.webkit.webauthn`
-items, but their `v_Data` is private key material rather than a fillable secret, so both they
-and the orphan sidecars are dropped. Surfacing them would need the extension to speak WebAuthn.
+**The per-site `website-metadata` record is a separate payload** and shares none of the keys
+above - breach-notification and passkey-endpoint state, keyed by site with no `acct`:
+
+```
+wn                                 STR, not a date
+wn_dm / wn_dr                      datetime
+passkeyEndpointsDateLastRefreshed  datetime
+supportsPasskey / enrollPasskeyURL / managePasskeyURL
+```
+
+Its `acct` is always blank, so it joins only a login that itself has no username and is otherwise
+inert in the merge; the `_is_credential` title filter drops it from the vault anyway.
+
+**Verification codes.** Setting up an authenticator code in the Passwords app writes it into the
+per-login sidecar's payload as `totp`; the login item and the sidecar's own record fields are
+untouched. The value is a sub-dict:
+
+```
+secret       RAW BYTES - not the base32 the QR shows (b32encode it to recover the setup key)
+algorithm    0 = SHA1 (the only value seen; this block rests on a single enrolment)
+digits       6        period  30
+issuer / accountName   from the otpauth label, with `+` left undecoded by Apple
+originalURL  the scanned otpauth:// URI kept verbatim (absent for a typed-in setup key)
+_initialDate unset (1970)
+```
+
+`icp/totp.py` rebuilds a canonical `otpauth://` URI from the structured fields rather than
+trusting `originalURL`, and generates RFC 6238 codes from it. The secret is stored in the vault
+but never crosses the native-messaging protocol: `match` carries a code generated at request
+time, and a `totp` command re-generates one when the browser's copy has rolled over.
+
+**Passkeys.** They sync as `com.apple.webkit.webauthn` items, all with a blank `acct` and a
+`v_Data` of 97 raw bytes rather than a fillable secret, so they are dropped. Surfacing them
+would need the extension to speak WebAuthn.
 
 Unlocking Passwords (fetch on the sponsor's behalf). The Passwords-app web logins
 (`com.apple.cfnetwork` items) live in the `Passwords` CKKS view, a user-controllable view
