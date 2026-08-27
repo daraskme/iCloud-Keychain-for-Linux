@@ -288,6 +288,56 @@ Discovered format corrections:
    break.
 3. The decrypted `inet` item plist uses `srvr` (domain), `acct` (username), `v_Data`
    (password) - reading `server` leaves every domain blank.
+4. **`v_Data` is not always a password, and `agrp` says which is which.** The keychain zones
+   carry many record types through the same item schema, all with a `srvr`/`acct`. Every item
+   also carries **`agrp`**, the access group of the subsystem that wrote it, which identifies
+   the record type. (`desc` states the same in words - "Web form password", "Website Metadata",
+   "AirPort network password" - but it is a display string, so `agrp` is the better key.)
+
+   | `agrp` | what it is |
+   |---|---|
+   | `com.apple.cfnetwork` | Safari web-form logins - **the credentials** |
+   | `apple` | generic passwords, incl. AirPort/wi-fi |
+   | `com.apple.password-manager`, `.website-metadata`, `.generated-passwords` | metadata sidecar (below) |
+   | `com.apple.safari.credit-cards` | payment cards - full PAN, CVV, expiry, FPAN hash |
+   | `com.apple.webkit.webauthn` | passkeys - `v_Data` is private key material |
+   | `com.apple.ProtectedCloudStorage` (+ variants) | PCS blobs |
+   | `hap.pairing`, `rapport`, `sbd`, `security.sos`, `bluetooth`, `photos`, `FinanceKit`, ... | subsystem key material and state |
+
+   `vault/host.py classify_item` keys on `agrp`: the `password-manager*` prefix is a sidecar,
+   `safari.credit-cards` a card, `webkit.webauthn` a passkey, `cfnetwork`/`apple` a login, any
+   other `com.apple.*` a subsystem record, and an unrecognised group falls back to
+   `classify_payload` (plist shape, then UTF-8, then C0 control bytes). The payload alone is not
+   a sufficient signal: some card and HomeKit-pairing records carry plain text in `v_Data`.
+
+   A non-text payload must not be forced through `.decode("utf-8", "replace")` - that yields
+   mojibake and destroys the bytes.
+
+### The "Password Manager Metadata" sidecar
+
+Creating a login in the Passwords app writes **two** keychain items: the login, and a sidecar
+labelled `Password Manager Metadata: <srvr> (<acct>)`. They join on `(srvr, acct)`. Apple leaves the sidecar behind, empty (`{}`), when its Notes field is cleared.
+
+Its `v_Data` is a binary plist:
+
+```
+notes   the Notes field                    s_hi   password HISTORY - list of
+title   user-set custom title                     {d: date, p: PREVIOUS PASSWORD
+ctxt    {<browser-profile>: {lUsed: ...}}          (cleartext), id: uuid, t: "pwcr"}
+        ^ the real last-used time lives    s_as   save-prompt bookkeeping
+          HERE, nested - NOT at top level  wn / wn_dm / wn_dr   breach-notification dates
+        Apple absolute time (secs 2001)    passkeyEndpointsDateLastRefreshed
+                                           enrollPasskeyURL / managePasskeyURL / supportsPasskey
+```
+
+`icp` merges `notes`, `title` and the nested `lUsed` (as `Credential.last_used`, which drives
+recency ordering - `mdat` is only the record's *write* time). Everything else is dropped;
+`s_hi` deliberately so, since it would put superseded cleartext passwords in the vault.
+
+**Passkeys.** Some sidecars have no login to pair with: their `acct` is a WebAuthn credential ID
+rather than a username. The passkeys themselves **do** sync, as `com.apple.webkit.webauthn`
+items, but their `v_Data` is private key material rather than a fillable secret, so both they
+and the orphan sidecars are dropped. Surfacing them would need the extension to speak WebAuthn.
 
 Unlocking Passwords (fetch on the sponsor's behalf). The Passwords-app web logins
 (`com.apple.cfnetwork` items) live in the `Passwords` CKKS view, a user-controllable view

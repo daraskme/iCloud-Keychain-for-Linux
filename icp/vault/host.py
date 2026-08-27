@@ -12,6 +12,7 @@ from __future__ import annotations
 import dataclasses
 import datetime
 import json
+import plistlib
 import re
 import struct
 import sys
@@ -23,13 +24,18 @@ class Credential:
     username: str
     password: str
     title: str = ""
-    # Unix epoch seconds of the item's last change (keychain `mdat`, falling back to `cdat`);
-    # 0 when unknown. Used to sort newest-first and to render a "last used N ago" line.
     mdat: float = 0.0
+    notes: str = ""
+    last_used: float = 0.0
+
+    @property
+    def recency(self) -> float:
+        return self.last_used or self.mdat
 
     def public_dict(self) -> dict:
         return {"domain": self.domain, "username": self.username,
-                "password": self.password, "title": self.title, "mdat": self.mdat}
+                "password": self.password, "title": self.title, "mdat": self.mdat,
+                "notes": self.notes, "last_used": self.last_used}
 
 
 _APPLE_EPOCH = 978307200  # 2001-01-01 UTC in unix seconds (Apple "absolute time" origin)
@@ -116,6 +122,127 @@ def _name_matches_host(page: str, name: str) -> bool:
     }
     return bool(labels & tokens)
 
+# `agrp` is the access group of the subsystem that wrote an item, and identifies its record type.
+_AGRP_LOGIN = {"com.apple.cfnetwork", "apple"}
+_AGRP_SIDECAR_PREFIX = "com.apple.password-manager"
+_AGRP_CARD = "com.apple.safari.credit-cards"
+_AGRP_PASSKEY = "com.apple.webkit.webauthn"
+
+_SIDECAR_LABEL_PREFIX = "password manager metadata:"
+# Allowlist: unknown keys are dropped. `s_hi` is excluded deliberately - it holds previous
+# passwords in cleartext, which have no autofill use and do not belong in the vault.
+_SIDECAR_KEEP = {"notes", "title", "ctxt"}
+_PLUMBING_KEYSETS = ({"tlkUUID", "srcIdentity"}, {"viewName", "encryptedData"})
+_CARD_KEYS = {"CardNumber", "FPANHash", "PrimaryAccountIdentifier", "CardSecurityCode"}
+
+
+def _load_plist(blob: bytes):
+    """Parse a binary-plist payload, or None if it isn't one."""
+    if not blob.startswith(b"bplist00"):
+        return None
+    try:
+        return plistlib.loads(blob, fmt=plistlib.FMT_BINARY)
+    except Exception:  # noqa: BLE001 - a malformed payload is simply "not a plist" here
+        return None
+
+
+def classify_payload(value, label: str = ""):
+    """Classify an item's `v_Data` -> (kind, payload).
+
+    kind is one of:
+      "password" - credential text; payload is the decoded `str`
+      "sidecar"  - a metadata record; payload is its plist dict
+      "card"     - a payment card; payload is its plist dict
+      "plumbing" - keychain-sync internals
+      "binary"   - key material
+
+    A password is text, so a payload that is not valid UTF-8 is classified rather than decoded.
+    """
+    if isinstance(value, str):
+        return "password", value
+    if not isinstance(value, (bytes, bytearray)):
+        return "password", ""
+    blob = bytes(value)
+    if not blob:
+        return "password", ""
+
+    parsed = _load_plist(blob)
+    if parsed is not None:
+        keys = set(parsed) if isinstance(parsed, dict) else set()
+        if any(keyset <= keys for keyset in _PLUMBING_KEYSETS):
+            return "plumbing", parsed
+        if keys & _CARD_KEYS:
+            return "card", parsed
+        return "sidecar", parsed
+    if blob.lstrip()[:5] == b"<?xml":
+        return "plumbing", None
+    try:
+        text = blob.decode("utf-8")
+    except UnicodeDecodeError:
+        return "binary", None
+    # Some records decode as valid UTF-8 but are not text; a password has no C0 control bytes.
+    if any(ord(ch) < 0x20 and ch not in "\t\n\r" or ord(ch) == 0x7f for ch in text):
+        return "binary", None
+    return "password", text
+
+
+def classify_item(item) -> tuple:
+    """Classify a decrypted keychain item -> (kind, payload), keying on its `agrp` access group.
+
+    Adds "passkey" and "subsystem" to the kinds `classify_payload` returns. An item whose group
+    is unrecognised falls back to inspecting the payload.
+    """
+    agrp = str(item.get("agrp") or "")
+    raw = item.get("v_Data") or item.get("password") or b""
+    label = str(item.get("labl") or "")
+
+    if agrp.startswith(_AGRP_SIDECAR_PREFIX):
+        payload = classify_payload(raw, label)[1]
+        return "sidecar", payload if isinstance(payload, dict) else {}
+    if agrp == _AGRP_CARD:
+        payload = classify_payload(raw, label)[1]
+        return "card", payload if isinstance(payload, dict) else {}
+    if agrp == _AGRP_PASSKEY:
+        return "passkey", None
+    if agrp in _AGRP_LOGIN:
+        # A login group still holds the odd non-text blob.
+        kind, payload = classify_payload(raw, label)
+        return (kind, payload) if kind in ("password", "sidecar") else ("binary", None)
+    if agrp.startswith("com.apple."):
+        return "subsystem", None
+    return classify_payload(raw, label)
+
+
+def _sidecar_last_used(ctxt) -> float:
+    """Last-used time from a sidecar's `ctxt`, keyed by browser profile:
+    {"<profile>": {"lUsed": <apple-absolute-seconds>}}. Takes the most recent across profiles."""
+    if not isinstance(ctxt, dict):
+        return 0.0
+    best = 0.0
+    for per_profile in ctxt.values():
+        if not isinstance(per_profile, dict):
+            continue
+        best = max(best, _to_unix(per_profile.get("lUsed") or per_profile.get("slUsed")))
+    return best
+
+
+def _sidecar_text(value) -> str:
+    """A sidecar string field, which plistlib may hand back as bytes."""
+    if isinstance(value, (bytes, bytearray)):
+        return bytes(value).decode("utf-8", "replace")
+    return str(value) if value else ""
+
+
+def decode_payment_cards(items) -> list[dict]:
+    """Payment-card records, decoded. Diagnostic only: `from_items` drops these, so they never
+    reach the vault or the browser extension."""
+    cards = []
+    for it in items:
+        kind, payload = classify_item(it)
+        if kind == "card" and payload:
+            cards.append({"id": it.get("acct") or "", **payload})
+    return cards
+
 
 class CredentialStore:
     """In-memory read-only store. The pipeline builds this from decrypted keychain items."""
@@ -142,32 +269,58 @@ class CredentialStore:
 
         ranked = [(rank, c) for c in self._creds if (rank := match_rank(c)) is not None]
         # exact-host matches first, then parent/subdomain, then label-only fallbacks; within a
-        # tier, most-recently-used first (newest `mdat`), then title for a stable order.
-        ranked.sort(key=lambda rc: (rc[0], -rc[1].mdat, rc[1].title, rc[1].username))
+        # tier, most-recently-used first, then title for a stable order.
+        ranked.sort(key=lambda rc: (rc[0], -rc[1].recency, rc[1].title, rc[1].username))
         return [c for _, c in ranked]
 
     @classmethod
     def from_items(cls, items) -> "CredentialStore":
         """Build from decrypted keychain item dicts (plist form). Apple `inet` password items use
         `srvr` (server/domain), `acct` (username), `v_Data` (plaintext password), `labl` (title);
-        tolerate the common variants."""
-        creds = []
+        tolerate the common variants.
+
+        A login and its metadata sidecar are separate keychain items joined on `(srvr, acct)`,
+        so this runs in two passes: collect both, then fold each sidecar onto its login. Cards,
+        sync plumbing and key material are dropped.
+        """
+        logins, sidecars = [], {}
         for it in items:
             domain = (it.get("srvr") or it.get("server") or it.get("domain")
                       or it.get("url") or it.get("svce") or "")
             username = it.get("acct") or it.get("username") or it.get("user") or ""
-            pw = it.get("v_Data") or it.get("password") or b""
-            if isinstance(pw, (bytes, bytearray)):
-                pw = pw.decode("utf-8", "replace")
-            title = str(it.get("labl") or domain)
+            label = str(it.get("labl") or "")
+            kind, payload = classify_item(it)
+            # The label names the login the sidecar describes, so trust it over an empty payload.
+            if label.lower().startswith(_SIDECAR_LABEL_PREFIX):
+                kind, payload = "sidecar", payload if isinstance(payload, dict) else {}
+
+            key = (str(domain).lower(), str(username).lower())
+            if kind == "sidecar":
+                if domain or username:
+                    kept = {k: v for k, v in payload.items() if k in _SIDECAR_KEEP}
+                    sidecars.setdefault(key, {}).update(kept)
+                continue
+            if kind != "password":
+                continue
+
+            title = label or str(domain)
             if not _is_credential(str(domain), title):
                 continue
             # Need a host/label to match against and at least a username or password to fill.
-            if (not domain and not username) or not (username or pw):
+            if (not domain and not username) or not (username or payload):
                 continue
-            mdat = _to_unix(it.get("mdat") or it.get("cdat"))
-            creds.append(Credential(domain=str(domain), username=str(username),
-                                    password=str(pw), title=title, mdat=mdat))
+            logins.append((key, str(domain), str(username), payload, title,
+                           _to_unix(it.get("mdat") or it.get("cdat"))))
+
+        creds = []
+        for key, domain, username, pw, title, mdat in logins:
+            side = sidecars.get(key, {})
+            title = _sidecar_text(side.get("title")) or title
+            creds.append(Credential(
+                domain=domain, username=username, password=pw, title=title, mdat=mdat,
+                notes=_sidecar_text(side.get("notes")),
+                last_used=_sidecar_last_used(side.get("ctxt")),
+            ))
         return cls(creds)
 
 

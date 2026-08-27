@@ -82,11 +82,11 @@
     if (userField) { userField.__applepwFilled = true; setValue(userField, alias.address); }
   }
 
-  // mdat is unix epoch seconds of the item's last change (0 = unknown). Render as a coarse
-  // "N days/months/years ago" string; "" when unknown so the line is omitted.
-  function relTime(mdat) {
-    if (!mdat) return "";
-    const days = Math.floor(Date.now() / 1000 / 86400 - mdat / 86400);
+  // Unix epoch seconds (0 = unknown). Render as a coarse "N days/months/years ago" string;
+  // "" when unknown so the line is omitted.
+  function relTime(when) {
+    if (!when) return "";
+    const days = Math.floor(Date.now() / 1000 / 86400 - when / 86400);
     if (days < 0) return "";
     if (days < 1) return "today";
     if (days < 30) return `${days} day${days === 1 ? "" : "s"} ago`;
@@ -162,7 +162,8 @@
         name.textContent = cred.username || website || "(no title)";
       }
       row.appendChild(name);
-      const rel = relTime(cred.mdat);
+      // last_used is a real use time; mdat is only the record's write time.
+      const rel = relTime(cred.last_used || cred.mdat);
       if (rel) row.appendChild(subLine(`Last used ${rel}`));
       menu.appendChild(row);
     }

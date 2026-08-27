@@ -3,8 +3,10 @@
 Run: .venv/bin/python -m unittest tests.test_host
 """
 
+import datetime
 import io
 import json
+import plistlib
 import struct
 import unittest
 
@@ -210,6 +212,109 @@ class DispatchTests(unittest.TestCase):
             host.write_message(o, b)
         b.seek(0)
         return b
+
+
+def _bplist(obj) -> bytes:
+    return plistlib.dumps(obj, fmt=plistlib.FMT_BINARY)
+
+
+class RecordClassificationTests(unittest.TestCase):
+    """Several record types share the keychain item schema; only some are logins."""
+
+    def test_agrp_routes_each_record_type(self):
+        card = _bplist({"CardNumber": "4111111111111111"})
+        cases = [
+            ("com.apple.cfnetwork", b"hunter2", "password"),
+            ("apple", b"wifi-pw", "password"),
+            ("com.apple.password-manager", _bplist({"notes": "n"}), "sidecar"),
+            ("com.apple.password-manager.website-metadata", _bplist({}), "sidecar"),
+            ("com.apple.safari.credit-cards", card, "card"),
+            # A card record's v_Data can be plain text; the group still decides.
+            ("com.apple.safari.credit-cards", b"1234", "card"),
+            ("com.apple.webkit.webauthn", b"\x04key", "passkey"),
+            ("com.apple.ProtectedCloudStorage", b"blob", "subsystem"),
+            ("com.apple.hap.pairing", b"text", "subsystem"),
+            ("com.thirdparty.app", b"hunter2", "password"),  # unknown group -> payload fallback
+            ("", b"hunter2", "password"),
+        ]
+        for agrp, data, expected in cases:
+            with self.subTest(agrp=agrp):
+                self.assertEqual(host.classify_item({"agrp": agrp, "v_Data": data})[0], expected)
+
+    def test_non_text_payload_is_never_decoded_lossily(self):
+        # Key material is not UTF-8; some protobufs are, but carry C0 control bytes.
+        for blob in (b"\x04\xd0\x9f\xff\xfe key \x80\x81", b"\x08\x01\x12n\x1a\x02GB"):
+            self.assertEqual(host.classify_payload(blob), ("binary", None))
+        self.assertEqual(host.classify_payload(b"line1\nline2"), ("password", "line1\nline2"))
+
+    def test_only_logins_reach_the_vault(self):
+        cred_id = "AAAAAAAAAAAAAAAAAAAAAA=="
+        items = [
+            {"agrp": "com.apple.cfnetwork", "srvr": "ex.com", "acct": "a", "v_Data": b"real"},
+            {"agrp": "com.apple.webkit.webauthn", "srvr": "ex.com", "acct": cred_id,
+             "v_Data": b"\x04key"},
+            {"agrp": "com.apple.safari.credit-cards", "srvr": "cards", "acct": "u",
+             "v_Data": _bplist({"CardNumber": "4111111111111111"})},
+            {"agrp": "com.apple.ProtectedCloudStorage", "srvr": "pcs", "acct": "k",
+             "v_Data": b"\x80\x81"},
+            # An orphan sidecar (a passkey's) must not appear as an entry of its own.
+            {"agrp": "com.apple.password-manager", "srvr": "other.test", "acct": cred_id,
+             "v_Data": _bplist({"ctxt": {"": {"lUsed": 780_000_000.0}}})},
+        ]
+        self.assertEqual([c.password for c in CredentialStore.from_items(items).all()], ["real"])
+        self.assertEqual(host.decode_payment_cards(items)[0]["CardNumber"], "4111111111111111")
+
+
+class SidecarMergeTests(unittest.TestCase):
+    """A login and its sidecar are two items joined on (srvr, acct); the sidecar must fold into
+    the login, never become an entry of its own."""
+
+    def _items(self, sidecar):
+        return [
+            {"agrp": "com.apple.cfnetwork", "srvr": "ex.com", "acct": "a@b.c",
+             "v_Data": b"hunter2", "labl": "ex.com (a@b.c)", "mdat": 1_600_000_000.0},
+            {"agrp": "com.apple.password-manager", "srvr": "ex.com", "acct": "a@b.c",
+             "v_Data": _bplist(sidecar)},
+        ]
+
+    def test_sidecar_folds_into_the_login(self):
+        # lUsed is nested under ctxt, keyed by browser profile, in Apple absolute time.
+        store = CredentialStore.from_items(self._items(
+            {"notes": b"my note", "title": b"My Bank",
+             "ctxt": {"": {"lUsed": 700_000_000.0},
+                      "Profile2": {"lUsed": 750_000_000.0}}}))
+        self.assertEqual(len(store), 1)
+        c = store.all()[0]
+        self.assertEqual((c.password, c.notes, c.title), ("hunter2", "my note", "My Bank"))
+        self.assertEqual(c.last_used, 750_000_000.0 + 978307200)
+
+    def test_only_allowlisted_sidecar_keys_are_kept(self):
+        # s_hi is password history: {d, p, id, t} where `p` is a previous password in cleartext.
+        store = CredentialStore.from_items(self._items({
+            "notes": "keep",
+            "s_hi": [{"d": datetime.datetime(2025, 12, 27), "p": "old-password-1",
+                      "id": "00000000-0000-0000-0000-000000000000", "t": "pwcr"}],
+            "notPrompted": True, "s_as": [], "wn_dm": datetime.datetime(2025, 6, 18),
+            "supportsPasskey": True, "enrollPasskeyURL": "https://x/enroll",
+        }))
+        blob = json.dumps(store.all()[0].public_dict())
+        self.assertIn("keep", blob)
+        for dropped in ("old-password-1", "s_hi", "notPrompted", "s_as", "wn_dm",
+                        "supportsPasskey", "enrollPasskeyURL"):
+            self.assertNotIn(dropped, blob)
+
+    def test_last_used_drives_ordering(self):
+        # mdat is unix seconds; the sidecar's lUsed is Apple absolute time (+978307200), so
+        # 780_000_000 resolves later than stale's mdat.
+        store = CredentialStore.from_items([
+            {"agrp": "com.apple.cfnetwork", "srvr": "ex.com", "acct": "stale",
+             "v_Data": b"p", "mdat": 1_500_000_000.0},
+            {"agrp": "com.apple.cfnetwork", "srvr": "ex.com", "acct": "fresh",
+             "v_Data": b"p", "mdat": 1_000_000_000.0},
+            {"agrp": "com.apple.password-manager", "srvr": "ex.com", "acct": "fresh",
+             "v_Data": _bplist({"ctxt": {"": {"lUsed": 780_000_000.0}}})},
+        ])
+        self.assertEqual([c.username for c in store.match("ex.com")], ["fresh", "stale"])
 
 
 if __name__ == "__main__":
