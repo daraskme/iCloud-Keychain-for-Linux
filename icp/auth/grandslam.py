@@ -14,7 +14,7 @@ TwoFactorCallback = Callable[[str], str]
 def authenticate(gsa: GSAClient, username: str, password: str,
                  twofa: TwoFactorCallback) -> dict:
     """Return the decrypted server provisioning data (spd), handling 2FA transparently."""
-    r, spd = gsa.authenticate(username, password)
+    r, spd = gsa.authenticate(username, password, "sign-in")
     status = r.get("Status", {})
     au = status.get("au")
 
@@ -26,17 +26,14 @@ def authenticate(gsa: GSAClient, username: str, password: str,
 
         if au == "trustedDeviceSecondaryAuth":
             gsa.trigger_trusted_factor(dsid, idms)
-            code = twofa("trusted")
-            if not gsa.submit_trusted_factor(code, dsid, idms):
-                raise GSAError("trusted-device 2FA rejected")
+            gsa.submit_trusted_factor(twofa("trusted"), dsid, idms)
         else:
             gsa.trigger_sms_factor(dsid, idms)
-            code = twofa("sms")
-            if not gsa.submit_sms_factor(code, dsid, idms):
-                raise GSAError("SMS 2FA rejected")
+            gsa.submit_sms_factor(twofa("sms"), dsid, idms)
 
         # Re-authenticate: the device is now trusted, so this should NOT prompt again.
-        r, spd = gsa.authenticate(username, password)
+        r, spd = gsa.authenticate(
+            username, password, "re-auth after 2FA (password already verified)")
         if r.get("Status", {}).get("au"):
             raise GSAError("still being asked for 2FA after submitting a code")
 

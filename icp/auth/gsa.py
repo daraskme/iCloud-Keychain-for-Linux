@@ -70,7 +70,7 @@ class GSAClient:
         )
         return plist.loads(resp.content)["Response"]
 
-    def authenticate(self, username: str, password: str) -> tuple[dict, dict]:
+    def authenticate(self, username: str, password: str, stage: str) -> tuple[dict, dict]:
         usr = srp.User(username, bytes(), hash_alg=srp.SHA256, ng_type=srp.NG_2048)
         _, A = usr.start_authentication()
 
@@ -78,7 +78,7 @@ class GSAClient:
         self.last_init_response = init
         logger.debug("GSA init response keys: %s", list(init))
         if "sp" not in init:
-            raise GSAError(f"init failed: {_status(init)}")
+            raise GSAError(f"{stage}: init failed: {_status(init)}")
         if init["sp"] not in ("s2k", "s2k_fo"):
             raise GSAError(f"unsupported protocol {init['sp']}")
 
@@ -92,7 +92,7 @@ class GSAClient:
         self.last_complete_response = complete
         logger.debug("GSA complete response keys: %s", list(complete))
         if "M2" not in complete:
-            raise GSAError(f"complete failed: {_status(complete)}")
+            raise GSAError(f"{stage}: complete failed: {_status(complete)}")
         usr.verify_session(complete["M2"])
         if not usr.authenticated():
             raise GSAError("server session verification failed (imposter?)")
@@ -109,14 +109,14 @@ class GSAClient:
             verify=False, timeout=10,
         )
 
-    def submit_trusted_factor(self, code: str, dsid: str, idms_token: str) -> bool:
+    def submit_trusted_factor(self, code: str, dsid: str, idms_token: str) -> None:
         h = self._twofa_headers(dsid, idms_token)
         h["security-code"] = code
         resp = requests.get(
             "https://gsa.apple.com/grandslam/GsService2/validate",
             headers=h, verify=False, timeout=10,
         )
-        return resp.ok
+        _check_code(resp, "trusted-device")
 
     def trigger_sms_factor(self, dsid: str, idms_token: str, phone_id: int = 1) -> None:
         requests.put(
@@ -126,7 +126,7 @@ class GSAClient:
             verify=False, timeout=10,
         )
 
-    def submit_sms_factor(self, code: str, dsid: str, idms_token: str, phone_id: int = 1) -> bool:
+    def submit_sms_factor(self, code: str, dsid: str, idms_token: str, phone_id: int = 1) -> None:
         body = {
             "phoneNumber": {"id": phone_id},
             "mode": "sms",
@@ -137,7 +137,7 @@ class GSAClient:
             json=body, headers=self._twofa_headers(dsid, idms_token),
             verify=False, timeout=10,
         )
-        return resp.ok
+        _check_code(resp, "SMS")
 
     def _twofa_headers(self, dsid: str, idms_token: str) -> dict:
         identity_token = base64.b64encode(f"{dsid}:{idms_token}".encode()).decode()
@@ -181,3 +181,13 @@ def _decrypt_cbc(usr, data: bytes) -> bytes:
 def _status(r: dict) -> str:
     s = r.get("Status", r)
     return f"ec={s.get('ec')} em={s.get('em')!r} au={s.get('au')!r}"
+
+
+def _check_code(resp, kind: str) -> None:
+    """A rejected code comes back as HTTP 200 with a bare plist."""
+    try:
+        body = plist.loads(resp.content)
+    except Exception:  # noqa: BLE001 - a rejected identity token answers 401 with no body
+        body = {}
+    if body.get("ec") or not resp.ok:
+        raise GSAError(f"{kind} 2FA code rejected: {body.get('em') or resp.status_code}")
