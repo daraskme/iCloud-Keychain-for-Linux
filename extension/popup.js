@@ -24,8 +24,7 @@ function activeTabId() {
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => resolve(tabs[0] && tabs[0].id)));
 }
 
-// The content script owns field detection, so popup fills go through it rather than repeating
-// the heuristics here. Frame 0 only, matching where a login form almost always lives.
+// Frame 0 only; the content script owns field detection.
 async function fillOnPage(cred) {
   const tabId = await activeTabId();
   if (tabId != null) chrome.tabs.sendMessage(tabId, { cmd: "fill", credential: cred }, { frameId: 0 });
@@ -37,7 +36,6 @@ async function copyCode(cred) {
   await navigator.clipboard.writeText(cred.totp.code);
 }
 
-// Repaint every second so the countdowns stay honest while the popup is open.
 const tickers = [];
 setInterval(() => tickers.forEach((paint) => paint()), 1000);
 

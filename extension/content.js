@@ -7,9 +7,13 @@
     'input[type="text"], input[type="email"], input[type="tel"], input[type="username"], input:not([type])';
   const OTP_SEL = 'input[type="text"], input[type="tel"], input[type="number"], input:not([type])';
   const SEGMENT_SEL = 'input[maxlength="1"]';
+  const FIELD_SEL = `${PASSWORD_SEL}, ${USERNAME_SEL}, input[type="number"]`;
 
   function visible(el) {
     if (!el || el.disabled || el.readOnly) return false;
+    if (el.checkVisibility && !el.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true })) {
+      return false;
+    }
     const r = el.getBoundingClientRect();
     return r.width > 0 && r.height > 0;
   }
@@ -45,7 +49,6 @@
       || el.type === "email" || el.type === "username";
   }
 
-
   const OTP_KEYWORDS = [
     "2facode", "approvalscode", "authcode", "authentication", "mfacode", "onetimecode",
     "onetimepassword", "otccode", "otcconfirmation", "otpcode", "secondfactor", "securitycode",
@@ -78,7 +81,6 @@
       || /0-9|\d/.test(el.pattern || "");
   }
 
-  // A row of one-character boxes is a code entry even when nothing names the individual inputs.
   function segmentGroup(el) {
     if (el.maxLength !== 1) return null;
     const group = deepQueryAll(SEGMENT_SEL, el.form || el.getRootNode())
@@ -90,8 +92,27 @@
     return namedLikeOtp(el) || !!segmentGroup(el);
   }
 
+  // Sites do render the password box as type="text" with the real one hidden (LinkedIn).
+  function looksLikePassword(el) {
+    if (el.type === "password") return true;
+    if (!OTP_TYPES.has(el.type)) return false;
+    const words = fieldWords(el);
+    return words.includes("password")
+      && !/passwordless|passwordhint|forgotpassword|resetpassword/.test(words);
+  }
+
+  // A page can carry several copies of the same sign-in form
+  function within(el, selector) {
+    const scoped = el && el.form ? deepQueryAll(selector, el.form).filter(visible) : [];
+    return scoped.length ? scoped : deepQueryAll(selector).filter(visible);
+  }
+
+  function passwordField(anchor) {
+    return within(anchor, FIELD_SEL).find(looksLikePassword) || deepQuery(PASSWORD_SEL);
+  }
+
   function findUsernameField(pwField) {
-    const all = deepQueryAll(USERNAME_SEL).filter(visible);
+    const all = within(pwField, USERNAME_SEL).filter((el) => !looksLikePassword(el));
     // Prefer a field that precedes the password field in document order. Across shadow-root
     // boundaries compareDocumentPosition can't establish order, so fall back to any candidate.
     const before = all
@@ -112,20 +133,19 @@
   }
 
   function fill(cred, anchor) {
-    const pw = deepQuery(PASSWORD_SEL);
+    const pw = passwordField(anchor);
     let userField = null;
-    if (anchor && anchor.type !== "password") userField = anchor;
+    if (anchor && !looksLikePassword(anchor)) userField = anchor;
     else if (pw) userField = findUsernameField(pw);
     // Mark these as programmatically filled so the 'input' they emit doesn't re-open the menu.
     if (userField && cred.username) { userField.__applepwFilled = true; setValue(userField, cred.username); }
     if (pw && cred.password) { pw.__applepwFilled = true; setValue(pw, cred.password); }
     if (cred.totp) {
-      const otp = deepQueryAll(OTP_SEL).filter(visible).find(isOtpField);
+      const otp = within(anchor || pw, OTP_SEL).find(isOtpField);
       if (otp) fillCode(cred, otp);
     }
   }
 
-  // The code the host generated expires on its own clock, so re-ask before filling a stale one.
   function currentCode(cred) {
     if (!cred.totp) return Promise.resolve("");
     if (Date.now() / 1000 < cred.totp.expires - 1) return Promise.resolve(cred.totp.code);
@@ -152,8 +172,8 @@
   // Hide My Email aliases carry no password - always fill the username/email field, never
   // the password field, even when that's the anchor that was clicked/focused.
   function fillAlias(alias, anchor) {
-    const pw = deepQuery(PASSWORD_SEL);
-    const userField = anchor && anchor.type !== "password" ? anchor : (pw ? findUsernameField(pw) : null);
+    const pw = passwordField(anchor);
+    const userField = anchor && !looksLikePassword(anchor) ? anchor : (pw ? findUsernameField(pw) : null);
     if (userField) { userField.__applepwFilled = true; setValue(userField, alias.address); }
   }
 
@@ -190,7 +210,6 @@
     });
   }
 
-  // A countdown line that repaints each second and pulls a fresh code once this one rolls over.
   function codeLine(cred, style) {
     const el = document.createElement("div");
     Object.assign(el.style, style);
@@ -224,7 +243,6 @@
     return row;
   }
 
-  // `codes` mode anchors on a one-time-code field: rows offer the code itself, not the login.
   function showMenu(anchor, creds, aliases, codes) {
     removeMenu();
     aliases = aliases || [];
@@ -351,7 +369,6 @@
     if (field.__applepw) return;
     field.__applepw = true;
     const open = () => getMatches().then(({ credentials, aliases }) => {
-      // A code field's typed value is digits, so it never filters the list.
       if (isOtpField(field)) return showMenu(field, credentials.filter((c) => c.totp), [], true);
       showMenu(field, filterCreds(credentials, field), filterAliases(aliases, field));
     });
@@ -364,13 +381,12 @@
   }
 
   function scan() {
-    const pwFields = deepQueryAll(PASSWORD_SEL).filter(visible);
-    pwFields.forEach(attach);
-    const hasPassword = pwFields.length > 0;
-    deepQueryAll(OTP_SEL).forEach((el) => { if (visible(el) && isOtpField(el)) attach(el); });
-    deepQueryAll(USERNAME_SEL).forEach((el) => {
-      if (!visible(el) || el.type === "password") return;
-      if (hasPassword || looksLikeUsername(el)) attach(el);
+    const fields = deepQueryAll(FIELD_SEL).filter(visible);
+    const passwords = fields.filter(looksLikePassword);
+    passwords.forEach(attach);
+    fields.forEach((el) => {
+      if (looksLikePassword(el)) return;
+      if (isOtpField(el) || passwords.length || looksLikeUsername(el)) attach(el);
     });
   }
 
