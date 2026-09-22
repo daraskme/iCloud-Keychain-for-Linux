@@ -105,6 +105,9 @@ class RecordParseTests(unittest.TestCase):
         self.assertEqual(_proto.first(_proto.decode_fields(request), 1), changed)
         self.assertEqual(_proto.first_str(_proto.decode_fields(request), 4), "change-tag-1")
         self.assertEqual(_proto.first(_proto.decode_fields(request), 6), 1)
+        delete = ckks.build_record_delete_request(parsed)
+        self.assertEqual(_proto.first_str(_proto.decode_fields(delete), 2), "change-tag-1")
+        self.assertIsNotNone(_proto.first(_proto.decode_fields(delete), 1))
 
     def test_parse_item_record(self):
         raw = _record("UUID-item", "item", [
