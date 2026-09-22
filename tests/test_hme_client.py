@@ -31,6 +31,10 @@ class _FakeHttp:
         self.requested_urls.append(url)
         return self.response
 
+    def post(self, url, **kwargs):
+        self.requested_urls.append((url, kwargs.get("json")))
+        return self.response
+
 
 class ListTests(unittest.TestCase):
     def test_parses_aliases(self):
@@ -53,6 +57,39 @@ class ListTests(unittest.TestCase):
             note="signed up on claude.ai", forward_to="me@example.com", is_active=True,
             domain="claude.ai", created_at=1700000000.0)])
         self.assertEqual(http.requested_urls, ["https://p1-maildomainws.icloud.com/v2/hme/list"])
+
+
+class WriteTests(unittest.TestCase):
+    def test_generate_reserve_and_update_payloads(self):
+        http = _FakeHttp(_FakeResponse(200, {
+            "success": True, "result": {"hme": "new@icloud.com"},
+        }))
+        client = HmeClient("https://p1-maildomainws.icloud.com", http)
+        self.assertEqual(client.generate(), "new@icloud.com")
+        http.response = _FakeResponse(200, {
+            "success": True, "result": {"hme": {
+                "anonymousId": "alias-id", "hme": "new@icloud.com",
+                "label": "Shop", "note": "for receipts", "isActive": True,
+            }},
+        })
+        alias = client.reserve("new@icloud.com", " Shop ", "for receipts")
+        self.assertEqual((alias.anonymous_id, alias.label), ("alias-id", "Shop"))
+        http.response = _FakeResponse(200, {"success": True, "result": {}})
+        client.update_metadata("alias-id", "New label", "New note")
+        self.assertEqual(http.requested_urls, [
+            ("https://p1-maildomainws.icloud.com/v1/hme/generate", None),
+            ("https://p1-maildomainws.icloud.com/v1/hme/reserve",
+             {"hme": "new@icloud.com", "label": "Shop", "note": "for receipts"}),
+            ("https://p1-maildomainws.icloud.com/v1/hme/updateMetaData",
+             {"anonymousId": "alias-id", "label": "New label", "note": "New note"}),
+        ])
+
+    def test_write_error_and_invalid_url(self):
+        with self.assertRaisesRegex(HmeError, "HTTPS"):
+            HmeClient("http://example.com", _FakeHttp(None))
+        http = _FakeHttp(_FakeResponse(403, {"success": False, "error": -1}))
+        with self.assertRaisesRegex(HmeError, "HTTP 403"):
+            HmeClient("https://p1-maildomainws.icloud.com", http).generate()
 
     def test_empty_list(self):
         http = _FakeHttp(_FakeResponse(200, {"success": True, "result": {"hmeEmails": []}}))
