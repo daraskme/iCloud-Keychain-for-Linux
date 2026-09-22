@@ -8,8 +8,9 @@ reverse engineering attempt and **is not affiliated with Apple in any way**.
 
 > **Note:** Most of this project was written with AI assistance (and reviewed by a human).
 > It works with my own Apple account, but that's no guarantee it will work with yours.
-> iCloud Keychain passwords are currently read-only. `icp hme create` and
-> `icp hme edit` explicitly change Hide My Email addresses in your Apple account.
+> `icp password edit` can update an existing web login and its existing notes/code
+> metadata record. Creating or deleting iCloud Keychain logins is not yet supported.
+> `icp hme create` and `icp hme edit` change Hide My Email addresses in your Apple account.
 
 > This is also **untested** with Advanced Data Protection enabled. Any help with this will be appreciated -
 > let me know if you have any issues with ADP enabled (also lmk if it works). Please don't spam escrow attempts!
@@ -73,6 +74,21 @@ icp show github
 Generate a strong random password locally with `icp generate-password`. The default
 is 24 characters; use `--length 32` for a different length. Generation does not
 save the password to iCloud Keychain.
+
+To edit an existing web login, use its exact saved site and username:
+
+```
+icp password edit example.com alice@example.com --password
+icp password edit example.com alice@example.com --notes
+icp password edit example.com alice@example.com --totp
+```
+
+The command prompts for the new value, saves it to iCloud with a conditional
+record update, fetches it again to verify the result, and refreshes the local
+vault. The TOTP prompt accepts an `otpauth://totp/...` URI; an empty answer
+removes the code. An empty notes answer removes the notes. The metadata commands
+currently require that this login already has a Password Manager Metadata
+record; `icp` reports that condition instead of creating an unverified record.
 
 ## Hide My Email
 
