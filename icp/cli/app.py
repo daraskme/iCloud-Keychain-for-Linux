@@ -3,7 +3,7 @@
 Interactive: the Apple ID password and 2FA code are read from the terminal and never
 stored. Only the resulting tokens are persisted, encrypted.
 
-Commands: login, show, sync, logout. `show` also folds in Hide My Email aliases.
+Commands: login, show, sync, logout, generate-password, hme.
 """
 import argparse
 import base64
@@ -20,6 +20,9 @@ from ..auth.anisette import Anisette, AnisetteError
 from ..auth.device import Device
 from ..auth.gsa import GSAClient, GSAError
 from ..auth.session import SessionError
+from ..hme.client import HmeClient, HmeError
+from ..hme.store import save_aliases
+from ..passwords import generate as generate_password
 from ..totp import generate as totp_generate
 
 ICLOUD_AUTH_TOKEN = "com.apple.gs.icloud.auth"
@@ -690,6 +693,86 @@ def cmd_logout(args) -> int:
     return 0
 
 
+def _hme_authenticated_client() -> HmeClient:
+    """Use the encrypted saved session to obtain an iCloud web session."""
+    from ..auth import webauth
+
+    record = session.load()
+    if not record:
+        raise HmeError("not signed in; run `icp login` first")
+    try:
+        web_session, account_data = _ensure_web_session(record, interactive=True)
+    except webauth.WebAuthError as e:
+        raise HmeError(str(e)) from e
+    base = webauth.extract_webservices(account_data).get("premiummailsettings")
+    if not base:
+        raise HmeError("Apple did not provide a Hide My Email service URL")
+    session.save(record)
+    return HmeClient(base, web_session.http)
+
+
+def cmd_hme(args) -> int:
+    try:
+        client = _hme_authenticated_client()
+        if args.hme_cmd == "create":
+            label = ui.ask("Label: ")
+            if not label:
+                raise HmeError("a label is required")
+            note = ui.ask("Note (optional): ")
+            address = client.generate()
+            alias = client.reserve(address, label, note)
+            ui.out(f"Created: {alias.address}")
+            try:
+                save_aliases(client.list())
+            except HmeError as e:
+                ui.warn(f"address was created, but the local cache refresh failed: {e}")
+            return 0
+
+        aliases = client.list()
+        if args.hme_cmd == "list":
+            save_aliases(aliases)
+            for alias in aliases:
+                state = "active" if alias.is_active else "inactive"
+                ui.out(f"{alias.address}  [{state}]  {alias.label}")
+            return 0
+
+        if not aliases:
+            raise HmeError("no Hide My Email addresses found")
+        for index, alias in enumerate(aliases, 1):
+            ui.out(f"{index}) {alias.address}  {alias.label}")
+        choice = ui.ask(f"Select address 1-{len(aliases)} (blank to cancel): ")
+        if not choice:
+            return 0
+        if not choice.isdigit() or not 1 <= int(choice) <= len(aliases):
+            raise HmeError("invalid selection")
+        selected = aliases[int(choice) - 1]
+        label = ui.ask(f"Label [{selected.label}]: ") or selected.label
+        note = ui.ask(f"Note [{selected.note}] (blank keeps; '-' clears): ")
+        if note == "-":
+            note = ""
+        elif not note:
+            note = selected.note
+        client.update_metadata(selected.anonymous_id, label, note)
+        ui.out(f"Updated: {selected.address}")
+        try:
+            save_aliases(client.list())
+        except HmeError as e:
+            ui.warn(f"metadata was updated, but the local cache refresh failed: {e}")
+        return 0
+    except HmeError as e:
+        ui.err(str(e))
+        return 1
+
+
+def cmd_generate_password(args) -> int:
+    try:
+        ui.out(generate_password(args.length))
+    except ValueError as e:
+        ui.err(str(e))
+        return 2
+    return 0
+
+
 def main(argv=None) -> int:
     logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
     p = argparse.ArgumentParser(
@@ -725,6 +808,19 @@ def main(argv=None) -> int:
     op = sub.add_parser("logout", help="clear the stored session")
     op.add_argument("--wipe-device", action="store_true", help="also remove the device identity")
     op.set_defaults(func=cmd_logout)
+
+    gp = sub.add_parser("generate-password", help="generate a strong random password")
+    gp.add_argument("--length", type=int, default=24, help="password length (12-128)")
+    gp.set_defaults(func=cmd_generate_password)
+
+    hp = sub.add_parser("hme", help="manage Hide My Email addresses")
+    hsub = hp.add_subparsers(dest="hme_cmd", required=True)
+    for name, help_text in (
+        ("list", "list Hide My Email addresses"),
+        ("create", "generate and reserve a new address"),
+        ("edit", "edit an address label and note"),
+    ):
+        hsub.add_parser(name, help=help_text).set_defaults(func=cmd_hme)
 
     args = p.parse_args(argv)
     try:
