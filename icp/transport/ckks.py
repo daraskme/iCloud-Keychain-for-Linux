@@ -30,6 +30,8 @@ OP_TYPE_RECORD_RETRIEVE_CHANGES = 213
 FIELD_RETRIEVE_CHANGES = 213
 OP_TYPE_RECORD_SAVE = 210
 FIELD_RECORD_SAVE = 210
+OP_TYPE_RECORD_DELETE = 214
+FIELD_RECORD_DELETE = 214
 
 
 def _identifier(name: str, type_: int) -> bytes:
@@ -217,3 +219,59 @@ def build_record_save_request(record_raw: bytes) -> bytes:
     # saveSemantics=1 means failIfOutdated; omitting field 4 accepted a stale write.
     return (Writer().message(1, record_raw).bool(2, True)
             .string(4, parsed.etag).uint64(6, 1).finish())
+
+
+def build_record_create_request(record_raw: bytes) -> bytes:
+    """Create a new record, failing if its identifier already exists."""
+    parsed = parse_record(record_raw)
+    if parsed.etag or not parsed.record_name or parsed.type != "item":
+        raise ValueError("new item record must have an ID and no etag")
+    return Writer().message(1, record_raw).bool(2, True).uint64(6, 2).finish()
+
+
+def build_new_item_record(template: CloudKitRecord, name: str,
+                          data: bytes, wrappedkey: str) -> bytes:
+    """Construct a new `item` in the template's zone with its parent class key.
+
+    Server-managed fields and the template's etag are omitted. The only copied
+    item fields are the class-key reference and CKKS format counters.
+    """
+    if template.type != "item" or not template.raw or not name:
+        raise ValueError("item template and new identifier are required")
+    source = decode_fields(template.raw)
+    source_id = first(source, 2)
+    zone = first(decode_fields(source_id), 2) if source_id else None
+    if zone is None:
+        raise ValueError("template record has no zone")
+    rid = (Writer().message(1, _identifier(name, 1))
+           .message(2, zone).finish())
+    record = Writer().message(2, rid).message(3, Writer().string(1, "item"))
+    copied = set()
+    for field_raw in source.get(7, []):
+        field = decode_fields(field_raw)
+        identifier = first(field, 1)
+        fname = first_str(decode_fields(identifier), 1) if identifier else None
+        if fname == "data":
+            record.message(7, Writer().message(1, identifier)
+                           .message(2, bytes_value(data)))
+        elif fname == "wrappedkey":
+            record.message(7, Writer().message(1, identifier)
+                           .message(2, string_value(wrappedkey)))
+        elif fname in {"parentkeyref", "encver", "gen", "uploadver"}:
+            record.message(7, field_raw)
+        else:
+            continue
+        copied.add(fname)
+    if not {"data", "wrappedkey", "parentkeyref", "encver", "gen"} <= copied:
+        raise ValueError("template is missing required CKKS item fields")
+    return record.finish()
+
+
+def build_record_delete_request(record: CloudKitRecord) -> bytes:
+    """Delete one exact record using its current etag as a compare-and-swap guard."""
+    if not record.raw or not record.etag or not record.record_name:
+        raise ValueError("record delete requires raw bytes, identifier, and etag")
+    identifier = first(decode_fields(record.raw), 2)
+    if identifier is None:
+        raise ValueError("record identifier is missing")
+    return Writer().message(1, identifier).string(2, record.etag).finish()
