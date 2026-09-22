@@ -11,6 +11,7 @@ from . import pipeline, write
 from .sidecar import edit_sidecar
 from ..octagon.client import load_peer_keys
 from ..transport import ckks
+from ..totp import uri_from_sidecar
 
 
 class PasswordEditError(ValueError):
@@ -47,12 +48,25 @@ def _target(records, class_keys, site: str, username: str):
     return logins[0], sidecars[0] if sidecars else None
 
 
-def edit_password(client, site: str, username: str, password: str) -> None:
+def _metadata_values(sidecar) -> tuple[str, str]:
+    if sidecar is None:
+        return "", ""
+    data = plistlib.loads(sidecar[1]["v_Data"])
+    notes = data.get("notes", "")
+    if isinstance(notes, bytes):
+        notes = notes.decode("utf-8")
+    return notes, uri_from_sidecar(data.get("totp"))
+
+
+def edit_password(client, site: str, username: str, password: str, *,
+                  expected_password: str | None = None) -> None:
     """Change an existing web login password, preserving all other item keys."""
     if not password:
         raise PasswordEditError("password cannot be empty")
     records, class_keys = _snapshot(client)
     (record, item), _ = _target(records, class_keys, site, username)
+    if expected_password is not None and item.get("v_Data") != expected_password.encode("utf-8"):
+        raise PasswordEditError("Password changed on another device; sync before editing again")
     parent = record.get_str("parentkeyref")
     class_key = class_keys.get(parent)
     if class_key is None:
@@ -66,12 +80,15 @@ def edit_password(client, site: str, username: str, password: str) -> None:
 
 
 def edit_metadata(client, site: str, username: str, *, notes: str | None = None,
-                  totp_uri: str | None = None) -> None:
+                  totp_uri: str | None = None,
+                  expected_metadata: tuple[str, str] | None = None) -> None:
     """Edit notes and/or TOTP, creating a metadata sidecar when needed."""
     if notes is None and totp_uri is None:
         raise PasswordEditError("select notes or TOTP to edit")
     records, class_keys = _snapshot(client)
     _, sidecar = _target(records, class_keys, site, username)
+    if expected_metadata is not None and _metadata_values(sidecar) != expected_metadata:
+        raise PasswordEditError("Notes or verification code changed on another device; sync before editing again")
     if sidecar is None:
         template = _template(records, class_keys, "com.apple.password-manager")
         payload = edit_sidecar(plistlib.dumps({}, fmt=plistlib.FMT_BINARY),
@@ -207,10 +224,16 @@ def _verify_absent(client, record_name: str) -> None:
         raise PasswordEditError("delete returned, but record remains on iCloud")
 
 
-def delete_password(client, site: str, username: str) -> None:
+def delete_password(client, site: str, username: str, *,
+                    expected_values: tuple[str, str, str] | None = None) -> None:
     """Delete a web login and its sidecar with etag-guarded record deletes."""
     records, class_keys = _snapshot(client)
     login, sidecar = _target(records, class_keys, site, username)
+    if expected_values is not None:
+        password, notes, totp = expected_values
+        if (login[1].get("v_Data") != password.encode("utf-8") or
+                _metadata_values(sidecar) != (notes, totp)):
+            raise PasswordEditError("Login changed on another device; sync before deleting")
     if sidecar is not None:
         client.transport.delete_record(ckks.build_record_delete_request(sidecar[0]))
         _verify_absent(client, sidecar[0].record_name)

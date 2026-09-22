@@ -1,0 +1,1 @@
+"""Desktop password manager."""

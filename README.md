@@ -9,8 +9,7 @@ reverse engineering attempt and **is not affiliated with Apple in any way**.
 > **Note:** Most of this project was written with AI assistance (and reviewed by a human).
 > It works with my own Apple account, but that's no guarantee it will work with yours.
 > `icp password add`, `edit`, and `delete` update the user's iCloud Keychain.
-> An existing login without a Password Manager Metadata sidecar cannot yet have
-> its first note or verification code added through `edit`.
+> Notes and verification codes can also be added to existing web logins.
 > `icp hme create` and `icp hme edit` change Hide My Email addresses in your Apple account.
 
 > This is also **untested** with Advanced Data Protection enabled. Any help with this will be appreciated -
@@ -59,7 +58,35 @@ it can join your keychain.
   asking you again - it never leaves your machine. Your access tokens and passwords are stored
   the same way.
 
-## Browse your passwords
+## Desktop password manager
+
+Run `icp-gui` or open **iCloud Passwords** from the application launcher. The
+Nix package includes a desktop entry for Plasma and other Linux desktops.
+
+The Japanese GUI provides:
+
+- Searchable password and Hide My Email lists.
+- Add/delete web logins; edit passwords, multiline notes, and TOTP setup keys.
+- Strong password generation with a selectable length (12–128 characters).
+- Live verification codes, a countdown, and copy buttons. Paste the website's
+  setup key or `otpauth://totp/…` URI in the editor, not a six-digit code.
+- Hide My Email issuance and editing of labels and multiline notes.
+- Explicit iCloud sync and background saves that keep the window responsive.
+
+Passwords and setup keys are masked initially. Copies are marked as secret for
+KDE's clipboard manager and cleared after 30 seconds if the clipboard still
+contains that copy. Editing an existing login keeps its site and username fixed.
+Clearing its notes or TOTP field and saving removes that metadata from iCloud.
+The GUI uses the same encrypted local store and saved login as the CLI. Initial
+login or renewed Apple two-factor approval still uses `icp login` in a terminal.
+
+Saved values are fetched again from iCloud. Conflicting password/metadata edits
+are rejected when the server differs from the value opened in the editor.
+Password and metadata writes are separate server operations; a partial save is
+reported explicitly. Hide My Email metadata has a pre-save conflict check, but
+Apple's endpoint does not provide conditional writes.
+
+## Browse your passwords in a terminal
 
 ```
 icp show
@@ -104,8 +131,8 @@ verification code; `add` treats empty answers as unset values.
 Creating a login requires at least one existing web login and one existing
 Password Manager Metadata record in the keychain. These provide the account's
 zone and class-key format. If either is unavailable, `icp` stops before making
-any write. Editing notes or codes on a login with no metadata record is not
-yet supported; newly created logins always receive one.
+any write. Editing notes or codes on a login with no metadata record creates one
+using an existing metadata template; newly created logins always receive one.
 
 ## Hide My Email
 

@@ -14,10 +14,19 @@
         src = self;
         pyproject = true;
         build-system = [ python.pkgs.setuptools ];
+        nativeBuildInputs = [ pkgs.qt6.wrapQtAppsHook ];
+        buildInputs = [ pkgs.qt6.qtbase pkgs.qt6.qtwayland pkgs.qt6.qtsvg ];
+        dontWrapQtApps = true;
+        preFixup = ''
+          makeWrapperArgs+=("''${qtWrapperArgs[@]}")
+        '';
         dependencies = with python.pkgs; [
-          requests srp cryptography pynacl secretstorage
+          requests srp cryptography pynacl secretstorage pyside6
         ];
         nativeCheckInputs = [ python.pkgs.pytestCheckHook ];
+        preCheck = ''
+          export QT_QPA_PLATFORM=offscreen
+        '';
       };
       pythonEnv = python.withPackages (_: [ icp ]);
       nativeHost = pkgs.writeShellScriptBin "icp-native-host" ''
@@ -46,12 +55,22 @@
         ${pkgs.jq}/bin/jq 'del(.background.scripts, .browser_specific_settings)' \
           ${self}/extension/manifest.json > "$out/share/icp/extension/manifest.json"
       '';
+      desktop = pkgs.makeDesktopItem {
+        name = "org.icp.Passwords";
+        desktopName = "iCloud Passwords";
+        comment = "Manage iCloud passwords, verification codes, and Hide My Email";
+        exec = "${icp}/bin/icp-gui";
+        icon = "dialog-password";
+        categories = [ "Utility" "Security" ];
+        startupNotify = true;
+        extraConfig."Name[ja]" = "iCloud パスワード";
+      };
     in {
       packages.${system} = {
-        inherit icp extension;
+        inherit icp extension desktop;
         default = pkgs.symlinkJoin {
           name = "icp-linux-nixos";
-          paths = [ icp nativeHost registerChrome extension ];
+          paths = [ icp nativeHost registerChrome extension desktop ];
         };
       };
     };
