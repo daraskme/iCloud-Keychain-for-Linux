@@ -8,8 +8,9 @@ reverse engineering attempt and **is not affiliated with Apple in any way**.
 
 > **Note:** Most of this project was written with AI assistance (and reviewed by a human).
 > It works with my own Apple account, but that's no guarantee it will work with yours.
-> `icp password edit` can update an existing web login and its existing notes/code
-> metadata record. Creating or deleting iCloud Keychain logins is not yet supported.
+> `icp password add`, `edit`, and `delete` update the user's iCloud Keychain.
+> An existing login without a Password Manager Metadata sidecar cannot yet have
+> its first note or verification code added through `edit`.
 > `icp hme create` and `icp hme edit` change Hide My Email addresses in your Apple account.
 
 > This is also **untested** with Advanced Data Protection enabled. Any help with this will be appreciated -
@@ -83,12 +84,28 @@ icp password edit example.com alice@example.com --notes
 icp password edit example.com alice@example.com --totp
 ```
 
-The command prompts for the new value, saves it to iCloud with a conditional
-record update, fetches it again to verify the result, and refreshes the local
-vault. The TOTP prompt accepts an `otpauth://totp/...` URI; an empty answer
-removes the code. An empty notes answer removes the notes. The metadata commands
-currently require that this login already has a Password Manager Metadata
-record; `icp` reports that condition instead of creating an unverified record.
+To create or delete a login:
+
+```
+icp password add example.com alice@example.com --notes --totp
+icp password add example.com alice@example.com --generate --length 32
+icp password delete example.com alice@example.com
+```
+
+`add` prompts for the password and, with the shown options, initial notes and
+an `otpauth://totp/...` URI. It creates a login and a metadata record, so the
+new login can be edited later. `--generate` creates a strong password and
+displays it once after the save succeeds. `delete` asks you to type the site before it
+removes the login and its metadata. Writes use conditional CloudKit record
+operations and are fetched again to verify the result. The local vault is
+refreshed afterwards. An empty answer at the edit prompt clears notes or the
+verification code; `add` treats empty answers as unset values.
+
+Creating a login requires at least one existing web login and one existing
+Password Manager Metadata record in the keychain. These provide the account's
+zone and class-key format. If either is unavailable, `icp` stops before making
+any write. Editing notes or codes on a login with no metadata record is not
+yet supported; newly created logins always receive one.
 
 ## Hide My Email
 
@@ -167,6 +184,7 @@ show     browse and search your passwords and Hide My Email addresses
 sync     refresh your passwords now
 logout   sign out (use --wipe-device to also forget this device)
 generate-password  generate a random password locally
+password add/edit/delete  manage iCloud web logins and their metadata
 hme list/create/edit  manage Hide My Email aliases
 ```
 
