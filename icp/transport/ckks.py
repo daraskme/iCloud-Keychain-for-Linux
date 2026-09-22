@@ -6,7 +6,7 @@ from __future__ import annotations
 import dataclasses
 import struct
 
-from ..proto.codec import Writer, decode_fields, first, first_str
+from ..proto.codec import Writer, decode_fields, encode_varint, first, first_str
 
 
 @dataclasses.dataclass
@@ -28,6 +28,8 @@ ID_TYPE_USER = 7
 
 OP_TYPE_RECORD_RETRIEVE_CHANGES = 213
 FIELD_RETRIEVE_CHANGES = 213
+OP_TYPE_RECORD_SAVE = 210
+FIELD_RECORD_SAVE = 210
 
 
 def _identifier(name: str, type_: int) -> bytes:
@@ -56,6 +58,8 @@ class CloudKitRecord:
     record_name: str        # identifier value name (usually a UUID)
     type: str               # "item" / "synckey" / "tlkshare" / "currentitem" / ...
     fields: dict            # {field_name: python value}
+    etag: str = ""           # CloudKit change tag for conditional saves
+    raw: bytes = b""        # original record, including unknown fields and zone identifier
 
     def get_bytes(self, name: str) -> bytes | None:
         v = self.fields.get(name)
@@ -110,7 +114,8 @@ def parse_record(raw: bytes) -> CloudKitRecord:
         val = first(ff, 2)
         if fname is not None and val is not None:
             fields[fname] = _parse_value(val)
-    return CloudKitRecord(record_name=name, type=rtype or "", fields=fields)
+    return CloudKitRecord(record_name=name, type=rtype or "", fields=fields,
+                          etag=first_str(f, 1) or "", raw=raw)
 
 
 def parse_retrieve_changes_response(raw: bytes) -> dict:
@@ -124,3 +129,91 @@ def parse_retrieve_changes_response(raw: bytes) -> dict:
         if rec is not None:
             records.append(parse_record(rec))
     return {"records": records, "continuation_token": first(f, 2), "status": first(f, 4)}
+
+
+def _wire_segments(raw: bytes):
+    """Yield (field number, complete wire bytes, value) without discarding unknown fields."""
+    pos = 0
+    while pos < len(raw):
+        start = pos
+        tag, pos = _read_varint(raw, pos)
+        field, wire = tag >> 3, tag & 7
+        if wire == 2:
+            size, pos = _read_varint(raw, pos)
+            end = pos + size
+            if end > len(raw):
+                raise ValueError("truncated protobuf field")
+            value = raw[pos:end]
+            pos = end
+        elif wire == 0:
+            value, pos = _read_varint(raw, pos)
+        elif wire in (1, 5):
+            size = 8 if wire == 1 else 4
+            end = pos + size
+            if end > len(raw):
+                raise ValueError("truncated protobuf field")
+            value = raw[pos:end]
+            pos = end
+        else:
+            raise ValueError(f"unsupported protobuf wire type {wire}")
+        yield field, raw[start:pos], value
+
+
+def _read_varint(raw: bytes, pos: int) -> tuple[int, int]:
+    value = shift = 0
+    while pos < len(raw) and shift < 70:
+        byte = raw[pos]
+        pos += 1
+        value |= (byte & 0x7f) << shift
+        if not byte & 0x80:
+            return value, pos
+        shift += 7
+    raise ValueError("truncated or oversized protobuf varint")
+
+
+def replace_record_fields(record: CloudKitRecord, replacements: dict[str, bytes]) -> bytes:
+    """Replace complete encoded Record.Field messages, preserving every other wire field.
+
+    ``replacements`` contains complete Field.Value messages. Only existing fields may be
+    changed, and a stale or absent etag is rejected before a save request is made.
+    """
+    if not record.raw or not record.etag or record.type != "item":
+        raise ValueError("an item record with raw bytes and etag is required")
+    remaining = set(replacements)
+    result = bytearray()
+    for number, segment, value in _wire_segments(record.raw):
+        if number == 7:
+            field = decode_fields(value)
+            identifier = first(field, 1)
+            name = first_str(decode_fields(identifier), 1) if identifier else None
+            if name in remaining:
+                replacement = (Writer().message(1, identifier)
+                               .message(2, replacements[name]).finish())
+                result += encode_varint((7 << 3) | 2)
+                result += encode_varint(len(replacement))
+                result += replacement
+                remaining.remove(name)
+                continue
+        result += segment
+    if remaining:
+        raise ValueError(f"record fields absent: {', '.join(sorted(remaining))}")
+    return bytes(result)
+
+
+def bytes_value(data: bytes) -> bytes:
+    return Writer().uint64(1, 1).bytes(2, data).finish()
+
+
+def string_value(data: str) -> bytes:
+    return Writer().uint64(1, 3).string(7, data).finish()
+
+
+def build_record_save_request(record_raw: bytes) -> bytes:
+    """Save a complete record with its original etag (CloudKit conflict detection)."""
+    parsed = parse_record(record_raw)
+    if not parsed.etag or not parsed.record_name:
+        raise ValueError("record save requires an etag and record identifier")
+    # The CAS etag belongs to RecordSaveRequest field 4 as well as Record field 1.
+    # saveSemantics=1 means failIfOutdated; omitting field 4 accepted a stale write.
+    return (Writer().message(1, record_raw).bool(2, True)
+            .string(4, parsed.etag).uint64(6, 1).finish())
