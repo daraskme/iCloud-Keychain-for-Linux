@@ -201,9 +201,9 @@ class OctagonClient:
                for b in bottles]
         return out
 
-    def sync_keychain(self, zones=ckks.KEYCHAIN_ZONES) -> dict:
+    def sync_keychain(self, zones=ckks.KEYCHAIN_ZONES, *, strict: bool = False) -> dict:
         """Fetch every keychain zone's records (live) and group them by CKKS type. A missing or
-        empty zone is skipped rather than failing the whole sync."""
+        empty zone is skipped in normal sync; strict mode raises fetch errors for writes."""
         grouped: dict[str, list] = {}
         for zone in zones:
             zid = ckks.record_zone_identifier(zone, self.user_id)
@@ -219,6 +219,8 @@ class OctagonClient:
                     if page.get("status") != 1 or not continuation:
                         break
             except cloudkit.CloudKitError:
+                if strict:
+                    raise
                 continue
         return grouped
 
