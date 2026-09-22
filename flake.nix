@@ -42,6 +42,9 @@
       extension = pkgs.runCommand "icp-chrome-extension" { } ''
         mkdir -p "$out/share/icp/extension"
         cp -r ${self}/extension/. "$out/share/icp/extension/"
+        chmod u+w "$out/share/icp/extension/manifest.json"
+        ${pkgs.jq}/bin/jq 'del(.background.scripts, .browser_specific_settings)' \
+          ${self}/extension/manifest.json > "$out/share/icp/extension/manifest.json"
       '';
     in {
       packages.${system} = {
