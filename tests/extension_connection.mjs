@@ -8,7 +8,13 @@ import { spawn } from "node:child_process";
 
 const temporary = await fs.mkdtemp(path.join(os.tmpdir(), "icp-connection-test-"));
 const extension = path.join(temporary, "extension");
-await fs.cp(new URL("../extension", import.meta.url), extension, { recursive: true });
+const extensionSource = process.env.ICP_EXTENSION_SOURCE || new URL("../extension", import.meta.url);
+if (process.env.ICP_EXTENSION_SOURCE) {
+  for (const file of await fs.readdir(extensionSource, {withFileTypes:true})) {
+    assert.equal(file.isSymbolicLink(), false, `Installed extension must contain real files: ${file.name}`);
+  }
+}
+await fs.cp(extensionSource, extension, { recursive: true });
 const manifest = JSON.parse(await fs.readFile(path.join(extension, "manifest.json"), "utf8"));
 delete manifest.background.scripts;
 delete manifest.browser_specific_settings;
@@ -22,6 +28,12 @@ async function nativeRequest(payload) {
   return {ok:true,count:1};
 }
 `);
+if (process.env.ICP_TEST_SYMLINKS === "1") {
+  const assets = path.join(temporary, "assets");
+  await fs.rename(extension, assets);
+  await fs.mkdir(extension);
+  for (const name of await fs.readdir(assets)) await fs.symlink(path.join(assets, name), path.join(extension, name));
+}
 const form = '<form><input autocomplete="username"><input type="password" autocomplete="current-password"></form>';
 const server = http.createServer((req, res) => {
   res.setHeader("Content-Type", "text/html");
@@ -102,10 +114,24 @@ try {
   await sleep(100);
   await call("Page.reload", {}, page); await sleep(300);
   assert.deepEqual(await values(page), ["", ""]);
+  const declarative = await evaluate(sw, `(async()=>{const [tab]=await chrome.tabs.query({active:true,currentWindow:true});
+    try{return await chrome.tabs.sendMessage(tab.id,{cmd:'ready',expectedOrigin:new URL(tab.url).origin},{frameId:0});}
+    catch(error){return {ok:false,error:error.message};}})()`);
+  assert.equal(declarative.ok, true, `Automatic content-script loading: ${declarative.error}`);
   const afterReload = await fill();
   assert.equal(afterReload.ok, true, `Stale document after reload: ${afterReload.error}`);
   assert.deepEqual(await values(page), [credential.username, credential.password]);
   console.log("PASS discard stale focus after page reload");
+  await evaluate(sw, "chrome.storage.local.set({autofillEnabled:true})");
+  const automaticPage = await openPage(url);
+  for (let i=0; i<100; i++) {
+    if ((await values(automaticPage))[1] === credential.password) break;
+    await sleep(20);
+  }
+  assert.deepEqual(await values(automaticPage), [credential.username, credential.password]);
+  console.log("PASS automatic filling in a newly opened page without popup interaction");
+  await evaluate(sw, "chrome.storage.local.set({autofillEnabled:false})");
+  await call("Page.bringToFront", {}, page);
   await evaluate(page, "document.querySelectorAll('input').forEach(field=>field.value='')");
   // Replace the extension while leaving the existing document and old script context intact.
   await call("Extensions.uninstall", {id});
@@ -133,7 +159,7 @@ try {
   assert.equal((await fill()).ok, false);
   assert.deepEqual(await values(framed), ["", ""]);
   console.log("PASS navigation to another origin never receives credentials");
-  console.log("5 real extension connection scenarios passed");
+  console.log("6 real extension connection scenarios passed");
 } finally {
   try { await call("Browser.close"); } catch (_) {}
   browser.kill("SIGTERM"); server.close();

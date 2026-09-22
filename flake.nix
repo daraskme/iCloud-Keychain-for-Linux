@@ -60,6 +60,11 @@
         ${pkgs.jq}/bin/jq 'del(.background.scripts, .browser_specific_settings)' \
           ${self}/extension/manifest.json > "$out/share/icp/extension/manifest.json"
       '';
+      installChrome = pkgs.writeShellScriptBin "icp-install-chrome" ''
+        exec ${python}/bin/python ${./scripts/install_chrome_extension.py} \
+          --source ${extension}/share/icp/extension \
+          --register ${registerChrome}/bin/icp-register-chrome "$@"
+      '';
       desktop = pkgs.makeDesktopItem {
         name = "org.icp.Passwords";
         desktopName = "iCloud Passwords";
@@ -75,7 +80,7 @@
         inherit icp extension desktop;
         default = pkgs.symlinkJoin {
           name = "icp-linux-nixos";
-          paths = [ icp nativeHost registerChrome extension desktop ];
+          paths = [ icp nativeHost registerChrome installChrome extension desktop ];
         };
       };
     };

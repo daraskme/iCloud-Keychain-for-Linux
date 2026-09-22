@@ -202,9 +202,12 @@ If you ever move this project to a different folder, just run `host/install.sh` 
   The extension does not press a submit button; some sites submit their code form
   themselves when the last digit is entered.
 
-On NixOS, keep the unpacked extension at a stable path such as
-`~/.local/share/icp/extension` and copy the package's `share/icp/extension/` there
-after upgrading. Reload the extension at `chrome://extensions`. Popup filling
+On NixOS, install or update the unpacked extension with
+`icp-install-chrome YOUR_32_CHARACTER_EXTENSION_ID`, then reload the extension
+at `chrome://extensions`. This keeps its path at `~/.local/share/icp/extension`,
+copies **real files** out of the Nix store, registers the native host, and retains
+a backup. Do not symlink individual files from the Nix store: Chrome can load the
+popup while silently failing to load declarative content scripts. Popup filling
 reconnects to existing tabs automatically, including after a page reload or an
 extension update. It checks the current document before sending login data.
 If Chrome denies access, allow the extension on that site in its **Site access** setting.
