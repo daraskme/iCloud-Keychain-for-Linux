@@ -19,9 +19,18 @@ as the NoxOS configuration.
    recovery passcode there. Never place them in shell command arguments.
    Check the passcode carefully: repeated wrong recovery attempts can lock
    keychain recovery, as noted in the upstream README.
-4. In Chrome, open `chrome://extensions`, enable Developer mode, and use
-   **Load unpacked** on the directory printed by
-   `realpath ~/.nix-profile/share/icp/extension`.
+4. Copy the Chrome extension to a stable directory after installing or
+   updating the package:
+
+   ```sh
+   mkdir -p ~/.local/share/icp/extension
+   cp -r ~/.nix-profile/share/icp/extension/. ~/.local/share/icp/extension/
+   chmod -R u+w ~/.local/share/icp/extension
+   ```
+
+   In Chrome, open `chrome://extensions`, enable Developer mode, and use
+   **Load unpacked** on `~/.local/share/icp/extension`. Reload the extension
+   after later updates.
 5. Copy the resulting extension ID and run `icp-register-chrome <ID>`.
    Reload the extension.
 
