@@ -67,13 +67,27 @@ def edit_password(client, site: str, username: str, password: str) -> None:
 
 def edit_metadata(client, site: str, username: str, *, notes: str | None = None,
                   totp_uri: str | None = None) -> None:
-    """Edit notes and/or TOTP on an existing Password Manager Metadata sidecar."""
+    """Edit notes and/or TOTP, creating a metadata sidecar when needed."""
     if notes is None and totp_uri is None:
         raise PasswordEditError("select notes or TOTP to edit")
     records, class_keys = _snapshot(client)
     _, sidecar = _target(records, class_keys, site, username)
     if sidecar is None:
-        raise PasswordEditError("this login has no Password Manager Metadata record yet")
+        template = _template(records, class_keys, "com.apple.password-manager")
+        payload = edit_sidecar(plistlib.dumps({}, fmt=plistlib.FMT_BINARY),
+                               notes=notes, totp_uri=totp_uri)
+        item = _new_item(template[1], site, username, payload, metadata=True)
+        name = str(uuid.uuid4()).upper()
+        try:
+            _create_one(client, template, class_keys, name, item)
+        except Exception as exc:
+            try:
+                _rollback_created(client, (name,))
+            except Exception as rollback_error:
+                raise PasswordEditError(
+                    f"metadata creation failed and rollback failed: {rollback_error}") from exc
+            raise PasswordEditError(f"metadata creation failed: {exc}") from exc
+        return
     record, item = sidecar
     parent = record.get_str("parentkeyref")
     class_key = class_keys.get(parent)
@@ -141,7 +155,7 @@ def _create_one(client, template, class_keys, name: str, item: dict):
     _verify(client, name, class_keys, lambda current: current == item)
 
 
-def _rollback_created(client, names: tuple[str, str]) -> None:
+def _rollback_created(client, names: tuple[str, ...]) -> None:
     """Remove any newly created records found by their fresh UUIDs."""
     for name in reversed(names):
         fresh = client.sync_keychain(zones=("Passwords", "Manatee"), strict=True)
