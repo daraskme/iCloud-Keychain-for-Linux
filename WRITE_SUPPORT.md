@@ -6,12 +6,22 @@ next `icp sync` would replace it with the server snapshot.
 
 ## Current boundary
 
-The current CKKS implementation fetches records, decrypts them, and keeps only
-flattened `Credential` objects in the local vault. It does not retain the
-record zone, record change tag, encrypted sidecar, or unknown plist fields that
-must be preserved to edit a server item safely. `CloudKitTransport` supports
-RecordRetrieveChanges (operation 213) and Cuttlefish function calls, but has no
-RecordModify transport.
+`icp password edit` now re-fetches live CKKS records, keeps each record's raw
+protobuf and change tag, prepares a freshly encrypted item, and sends a
+RecordSave (operation 210) request. It then re-fetches the item to verify the
+edit. It can edit a web login password and, when that login already has a
+`com.apple.password-manager` sidecar, its notes and TOTP enrollment.
+
+The save request needs **both** the record's own etag and the same etag in
+`RecordSaveRequest` field 4, plus `saveSemantics = 1` (`failIfOutdated`). A
+disposable-record test demonstrated that omitting field 4 accepted a stale
+write even when the record's own etag was stale. With field 4 present, a stale
+replay was rejected. This is an observed safety property, not an assumption.
+
+Creating/deleting logins and creating a missing metadata sidecar are still
+unimplemented. Apple's own Passwords app has not yet been used to confirm that
+it displays the edited test item after syncing; the verification so far is a
+fresh CKKS fetch and decrypt with this client.
 
 ## Required backend work
 
