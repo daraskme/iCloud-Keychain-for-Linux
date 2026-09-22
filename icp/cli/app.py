@@ -773,23 +773,38 @@ def cmd_generate_password(args) -> int:
     return 0
 
 
-def cmd_password_edit(args) -> int:
-    """Edit one exact iCloud login with prompts that keep secrets out of shell history."""
+def cmd_password_manage(args) -> int:
+    """Manage exact iCloud logins with prompts that keep secrets out of shell history."""
     import fcntl
     from ..keychain import manager
     from ..octagon.client import OctagonClient, OctagonError
     from ..paths import sync_lock_file
     from ..transport.cloudkit import CloudKitError
 
-    if not (args.password or args.notes or args.totp):
-        ui.err("choose --password, --notes, or --totp")
-        return 2
-    if args.password and (args.notes or args.totp):
-        ui.err("edit the password and metadata in separate commands")
-        return 2
-    password = ui.secret("New password: ") if args.password else None
-    notes = ui.ask("Notes (empty clears): ") if args.notes else None
-    totp_uri = ui.secret("otpauth:// URI (empty clears): ") if args.totp else None
+    if args.password_cmd == "edit":
+        if not (args.password or args.notes or args.totp):
+            ui.err("choose --password, --notes, or --totp")
+            return 2
+        if args.password and (args.notes or args.totp):
+            ui.err("edit the password and metadata in separate commands")
+            return 2
+        password = ui.secret("New password: ") if args.password else None
+        notes = ui.ask("Notes (empty clears): ") if args.notes else None
+        totp_uri = ui.secret("otpauth:// URI (empty clears): ") if args.totp else None
+    elif args.password_cmd == "add":
+        try:
+            password = (generate_password(args.length) if args.generate else
+                        ui.secret("Password for new login: "))
+        except ValueError as e:
+            ui.err(str(e))
+            return 2
+        notes = ui.ask("Notes: ") if args.notes else ""
+        totp_uri = ui.secret("otpauth:// URI: ") if args.totp else ""
+    else:
+        if ui.ask(f"Type {args.site} to delete this login: ") != args.site:
+            ui.err("aborted")
+            return 1
+        password = notes = totp_uri = None
 
     lock = open(sync_lock_file(), "w")
     try:
@@ -809,12 +824,19 @@ def cmd_password_edit(args) -> int:
         session.save(s)
         client = OctagonClient(s, device, anisette)
         session.save(s)
-        if password is not None:
+        if args.password_cmd == "add":
+            manager.create_password(client, args.site, args.username, password,
+                                    notes=notes, totp_uri=totp_uri)
+        elif args.password_cmd == "delete":
+            manager.delete_password(client, args.site, args.username)
+        elif password is not None:
             manager.edit_password(client, args.site, args.username, password)
         else:
             manager.edit_metadata(client, args.site, args.username,
                                   notes=notes, totp_uri=totp_uri)
-        ui.out("Saved and verified on iCloud.")
+        ui.out("Change verified on iCloud.")
+        if args.password_cmd == "add" and args.generate:
+            ui.out(f"Generated password: {password}")
         try:
             client.sync_and_decrypt()
         except (OctagonError, CloudKitError) as e:
@@ -869,7 +891,7 @@ def main(argv=None) -> int:
     gp.add_argument("--length", type=int, default=24, help="password length (12-128)")
     gp.set_defaults(func=cmd_generate_password)
 
-    pp = sub.add_parser("password", help="edit an existing iCloud web login")
+    pp = sub.add_parser("password", help="add, edit, or delete iCloud web logins")
     psub = pp.add_subparsers(dest="password_cmd", required=True)
     pe = psub.add_parser("edit", help="edit password, notes, or verification code")
     pe.add_argument("site", help="exact site saved in iCloud Passwords")
@@ -877,7 +899,19 @@ def main(argv=None) -> int:
     pe.add_argument("--password", action="store_true", help="prompt for a new password")
     pe.add_argument("--notes", action="store_true", help="prompt for notes")
     pe.add_argument("--totp", action="store_true", help="prompt for an otpauth:// URI")
-    pe.set_defaults(func=cmd_password_edit)
+    pe.set_defaults(func=cmd_password_manage)
+    pa = psub.add_parser("add", help="create a web login and metadata record")
+    pa.add_argument("site", help="website domain")
+    pa.add_argument("username", help="login username")
+    pa.add_argument("--notes", action="store_true", help="prompt for initial notes")
+    pa.add_argument("--totp", action="store_true", help="prompt for initial otpauth:// URI")
+    pa.add_argument("--generate", action="store_true", help="generate and display a strong password")
+    pa.add_argument("--length", type=int, default=24, help="generated password length (12-128)")
+    pa.set_defaults(func=cmd_password_manage)
+    pd = psub.add_parser("delete", help="delete a web login and its metadata record")
+    pd.add_argument("site", help="exact site saved in iCloud Passwords")
+    pd.add_argument("username", help="exact username saved in iCloud Passwords")
+    pd.set_defaults(func=cmd_password_manage)
 
     hp = sub.add_parser("hme", help="manage Hide My Email addresses")
     hsub = hp.add_subparsers(dest="hme_cmd", required=True)
