@@ -4,6 +4,7 @@ key unwrap. See RESEARCH.md "keychain/crypto.py"."""
 from __future__ import annotations
 
 import hashlib
+import os
 
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM, AESSIV
@@ -47,6 +48,25 @@ def ecies_decrypt_sf(private_key: ec.EllipticCurvePrivateKey, ies: dict) -> byte
 
 def siv_unwrap(key64: bytes, wrapped: bytes, associated_data=None) -> bytes:
     return AESSIV(key64).decrypt(wrapped, list(associated_data or []))
+
+
+def siv_wrap(key64: bytes, plaintext: bytes, associated_data=None) -> bytes:
+    return AESSIV(key64).encrypt(plaintext, list(associated_data or []))
+
+
+def _iso7816_pad(data: bytes, block_size: int = 20, *, extra_block: bool = False) -> bytes:
+    padding_length = block_size - len(data) % block_size
+    if extra_block:
+        padding_length += block_size
+    return data + b"\x80" + bytes(padding_length - 1)
+
+
+def encrypt_item(item_key64: bytes, plaintext: bytes, aad_values=None,
+                 *, short_password: bool = False) -> bytes:
+    """Apple CKKS item.data: random nonce || AES-SIV(padded plist, nonce + AAD)."""
+    nonce = os.urandom(16)
+    padded = _iso7816_pad(plaintext, extra_block=short_password)
+    return nonce + siv_wrap(item_key64, padded, [nonce] + list(aad_values or []))
 
 
 def _strip_iso7816_padding(data: bytes) -> bytes:
