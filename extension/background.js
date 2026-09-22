@@ -61,13 +61,55 @@ async function popupContext() {
   return { tabId: tab.id, frameId: 0, origin: page.origin, domain: page.hostname };
 }
 
-async function sendFill(context, payload) {
-  const options = context.documentId ? { documentId: context.documentId } : { frameId: context.frameId };
+async function connectedPage(context) {
+  // A cached documentId becomes invalid on navigation, even when the URL is unchanged.
+  // Probe Chrome's current documents without sending any vault data to them.
+  const tab = await chrome.tabs.get(context.tabId);
+  if (webURL(tab.url)?.origin !== context.origin) throw new Error("ページが移動しました。拡張機能を開き直してください。");
+  let frames;
   try {
-    return await chrome.tabs.sendMessage(context.tabId, payload, options);
-  } catch (_) {
-    throw new Error("サイトを再読み込みし、入力欄をクリックしてから再実行してください。");
+    frames = await chrome.scripting.executeScript({
+      target: { tabId: context.tabId, allFrames: true },
+      func: () => {
+        let field = document.activeElement;
+        while (field?.shadowRoot?.activeElement) field = field.shadowRoot.activeElement;
+        let focused = !!field?.matches("input,textarea,[contenteditable='true']");
+        try {
+          for (let frame = window; frame !== frame.top; frame = frame.parent) {
+            if (frame.parent.document.activeElement !== frame.frameElement) focused = false;
+          }
+        } catch (_) { focused = false; }
+        return { origin: window.origin, focused };
+      },
+    });
+  } catch (error) {
+    throw new Error("ページに接続できません。拡張機能の「サイトへのアクセス」を確認してください。", { cause: error });
   }
+  const top = frames.find(f => f.frameId === 0);
+  if (top?.result?.origin !== context.origin) throw new Error("ページが移動しました。拡張機能を開き直してください。");
+  const sameOrigin = frames.filter(f => f.result?.origin === context.origin && f.documentId);
+  const current = sameOrigin.find(f => f.result.focused) ||
+    sameOrigin.find(f => f.documentId === context.documentId) || top;
+  if (!current?.documentId) throw new Error("入力するページを確認できません。拡張機能を開き直してください。");
+  const fresh = { ...context, frameId: current.frameId, documentId: current.documentId };
+  const options = { documentId: fresh.documentId };
+  const ready = () => chrome.tabs.sendMessage(fresh.tabId, { cmd: "ready", expectedOrigin: fresh.origin }, options);
+  let response;
+  try { response = await ready(); } catch (_) { /* The listener can be absent after extension updates. */ }
+  if (!response?.ok) {
+    await chrome.scripting.executeScript({ target: { tabId: fresh.tabId, documentIds: [fresh.documentId] }, files: ["content.js"] });
+    response = await ready();
+  }
+  if (!response?.ok) throw new Error("ページへの接続を復旧できませんでした。拡張機能を再読み込みしてください。");
+  return fresh;
+}
+
+async function sendFill(context, payload) {
+  const fresh = await connectedPage(context);
+  const tab = await chrome.tabs.get(fresh.tabId);
+  if (webURL(tab.url)?.origin !== fresh.origin) throw new Error("ページが移動しました。拡張機能を開き直してください。");
+  // Pin the secret-bearing message to the document we just checked, never to a reused frame ID.
+  return chrome.tabs.sendMessage(fresh.tabId, { ...payload, expectedOrigin: fresh.origin }, { documentId: fresh.documentId });
 }
 
 async function handle(message, sender) {

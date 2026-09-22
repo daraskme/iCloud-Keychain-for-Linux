@@ -204,10 +204,15 @@ If you ever move this project to a different folder, just run `host/install.sh` 
 
 On NixOS, keep the unpacked extension at a stable path such as
 `~/.local/share/icp/extension` and copy the package's `share/icp/extension/` there
-after upgrading. Reload it at `chrome://extensions`, then reload the website.
+after upgrading. Reload the extension at `chrome://extensions`. Popup filling
+reconnects to existing tabs automatically, including after a page reload or an
+extension update. It checks the current document before sending login data.
+If Chrome denies access, allow the extension on that site in its **Site access** setting.
 
 Browser regression tests use an isolated profile and synthetic credentials:
-`CHROME_BIN=google-chrome node tests/browser_autofill.mjs`. The Nix package also
+`CHROME_BIN=google-chrome node tests/browser_autofill.mjs` checks field detection;
+`CHROME_BIN=google-chrome node tests/extension_connection.mjs` loads the actual
+extension and checks message delivery and recovery in Chrome. The Nix package also
 runs the native-host tests and the background-worker authorization tests.
 
 ## Keeping your passwords up to date

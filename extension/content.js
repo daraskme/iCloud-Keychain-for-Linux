@@ -397,7 +397,8 @@
   function send(msg) {
     return new Promise((resolve) => {
       if (!chrome.runtime || !chrome.runtime.id) return resolve(null);
-      chrome.runtime.sendMessage(msg, (resp) => resolve(chrome.runtime.lastError ? null : resp));
+      try { chrome.runtime.sendMessage(msg, (resp) => resolve(chrome.runtime.lastError ? null : resp)); }
+      catch (_) { resolve(null); }
     });
   }
 
@@ -427,12 +428,13 @@
       if (isOtpField(field)) return showMenu(field, credentials.filter((c) => c.totp), [], true);
       showMenu(field, filterCreds(credentials, field), filterAliases(aliases, field));
     });
-    field.addEventListener("focus", () => {
+    const focus = () => {
       focusedField = field;
       send({ cmd: "focused" });
       open();
-    });
-    field.addEventListener("click", open);
+    };
+    field.addEventListener("focus", focus);
+    field.addEventListener("click", focus);
     field.addEventListener("input", (event) => {
       if (field.__applepwFilled) { field.__applepwFilled = false; return; }
       if (event.isTrusted) edited.add(field);
@@ -538,12 +540,25 @@
   });
 
   chrome.runtime.onMessage.addListener((msg, _sender, respond) => {
+    if (msg?.expectedOrigin && (window.origin !== msg.expectedOrigin || location.origin !== msg.expectedOrigin)) {
+      respond({ ok: false, error: "ページが移動しました。拡張機能を開き直してください。" });
+      return false;
+    }
+    if (msg?.cmd === "ready") {
+      let active = document.activeElement;
+      while (active?.shadowRoot?.activeElement) active = active.shadowRoot.activeElement;
+      if (active?.matches(FIELD_SEL) && visible(active)) focusedField = active;
+      scan();
+      respond({ ok: true });
+      return false;
+    }
     if (msg && msg.cmd === "fill") {
       removeMenu();
       const anchor = focusedField?.isConnected ? focusedField :
         deepQueryAll(FIELD_SEL).filter(visible).find(isOtpField) || null;
       fill(msg.credential, anchor).then(count => respond({ ok: count > 0,
-        error: count ? "" : "入力欄が見つからないか、有効な認証コードを取得できません。" }));
+        error: count ? "" : "入力欄が見つからないか、有効な認証コードを取得できません。" }),
+        () => respond({ ok: false, error: "入力欄が変更されました。入力したい欄を選び直してください。" }));
       return true;
     }
     if (msg?.cmd === "fill_alias") {

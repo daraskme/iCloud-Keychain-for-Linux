@@ -19,9 +19,13 @@ function worker(session = storage(), local = storage()) {
       else if(req.cmd==="aliases")result={ok:true,aliases:[alias]};
       else if(req.cmd==="totp")result={ok:true,totp:credential.totp};
       else result={ok:true,count:1}; done(structuredClone(result));},
-    onMessage:{addListener:fn=>listener=fn}},storage:{session,local},tabs:{
+    onMessage:{addListener:fn=>listener=fn}},storage:{session,local},scripting:{executeScript:async()=>[
+      {frameId:0,documentId:"doc-1",result:{origin:"https://example.com",focused:false}},
+      {frameId:2,documentId:"doc-frame",result:{origin:"https://example.com",focused:false}},
+    ]},tabs:{
+      get:async()=>({id:7,url:"https://example.com/login"}),
       query:async()=>[{id:7,url:"https://example.com/login"}],
-      sendMessage:async(id,payload,options)=>{fills.push({id,payload,options});return {ok:true};},
+      sendMessage:async(id,payload,options)=>{if(payload.cmd!=="ready")fills.push({id,payload,options});return {ok:true};},
       onRemoved:{addListener:fn=>removed=fn}}};
   vm.runInNewContext(source,{chrome,URL,Date,Promise,Set});
   return {requests,fills,session,local,removed,
