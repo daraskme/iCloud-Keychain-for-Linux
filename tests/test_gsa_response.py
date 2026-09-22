@@ -31,10 +31,11 @@ class GSAResponseTests(unittest.TestCase):
             headers={"Content-Type": "text/x-xml-plist"},
             content=plistlib.dumps({"Response": {"Status": {"ec": 0}}}),
         )
-        with patch("icp.auth.gsa.requests.post", return_value=response):
+        with patch("icp.auth.gsa.requests.post", return_value=response) as post:
             self.assertEqual(
                 self.client._request({"o": "init"}), {"Status": {"ec": 0}}
             )
+        self.assertIn("com.apple.akd/1.0", post.call_args.kwargs["headers"]["X-MMe-Client-Info"])
 
 
 if __name__ == "__main__":
