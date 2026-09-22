@@ -184,14 +184,31 @@ If you ever move this project to a different folder, just run `host/install.sh` 
 
 ## Filling in passwords
 
-- On a sign-in page, click the username or password box - an **iCloud Passwords** dropdown appears
-  with matching logins. Click one to fill it in (it handles email-first pages like Google too).
-- Start typing to narrow the list.
-- Or click the extension's toolbar icon and pick a login there.
-- On a **two-factor code** box, the dropdown offers the current code instead - click to fill it.
-  Pages that split the code across six separate boxes are filled a digit at a time. The code is
-  always regenerated at the moment you click, so it is never a stale one, and the toolbar popup
-  shows the code next to each login (click it to copy).
+- Automatic filling is enabled by default. A single matching login fills visible,
+  empty username/email and current-password fields on HTTPS pages. Username-first
+  flows, dynamically rendered inputs, and open shadow roots are supported.
+- If there are several matching accounts, choose one in the field dropdown or
+  toolbar popup. The choice is kept for 15 minutes for that tab and origin, including
+  a subsequent password or verification-code page. No password is kept in extension storage.
+- Stored **TOTP verification codes** fill a single code field or a labelled group of
+  separate digit boxes. Expired codes are refreshed before use; a failed refresh
+  leaves the field empty. Codes are never truncated to fit a shorter group.
+- The popup lists active **Hide My Email** addresses. Choose one to fill the email
+  field and remember that address for this origin. Unassigned addresses are not
+  automatically chosen. Use the GUI to issue a new address first.
+- The popup's **自動入力を有効にする** switch turns automatic filling on or off.
+  Manual filling remains available. Existing input, hidden fields, new-password
+  fields, unrelated forms, and cross-origin frames are not automatically filled.
+  The extension does not press a submit button; some sites submit their code form
+  themselves when the last digit is entered.
+
+On NixOS, keep the unpacked extension at a stable path such as
+`~/.local/share/icp/extension` and copy the package's `share/icp/extension/` there
+after upgrading. Reload it at `chrome://extensions`, then reload the website.
+
+Browser regression tests use an isolated profile and synthetic credentials:
+`CHROME_BIN=google-chrome node tests/browser_autofill.mjs`. The Nix package also
+runs the native-host tests and the background-worker authorization tests.
 
 ## Keeping your passwords up to date
 

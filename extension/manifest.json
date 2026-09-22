@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Apple Passwords",
-  "version": "0.1.0",
-  "description": "Read-only iCloud Keychain autofill for Linux, via a native host.",
+  "version": "0.2.0",
+  "description": "Automatically fill iCloud usernames, passwords, email aliases and verification codes.",
   "permissions": ["nativeMessaging", "activeTab", "scripting", "storage"],
   "host_permissions": ["http://*/*", "https://*/*"],
   "browser_specific_settings": {

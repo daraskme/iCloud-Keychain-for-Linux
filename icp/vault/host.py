@@ -46,7 +46,9 @@ class Credential:
 
     def wire_dict(self) -> dict:
         """The extension's view: the `totp` URI is replaced by a code generated now."""
-        return {**self.public_dict(), "totp": totp_codes.generate(self.totp) or None}
+        return {"domain": self.domain, "username": self.username, "password": self.password,
+                "title": self.title, "mdat": self.mdat, "last_used": self.last_used,
+                "totp": totp_codes.generate(self.totp) or None}
 
 
 _APPLE_EPOCH = 978307200  # 2001-01-01 UTC in unix seconds (Apple "absolute time" origin)
@@ -96,7 +98,7 @@ def match_aliases(page_domain: str, aliases: list) -> list:
     """Hide My Email aliases (icp.hme.client.HmeAlias) whose recorded domain matches the
     page, same domains_match() rule as Credential. Duck-typed on `.domain` rather than
     importing HmeAlias - vault/ stays free of any import from the hme/ extension."""
-    return [a for a in aliases if a.domain and domains_match(page_domain, a.domain)]
+    return [a for a in aliases if a.is_active and a.domain and domains_match(page_domain, a.domain)]
 
 
 def _is_credential(domain: str, title: str) -> bool:
@@ -361,6 +363,8 @@ def handle(request: dict, store: CredentialStore, aliases: list | None = None) -
     cmd = request.get("cmd")
     if cmd == "ping":
         return {"ok": True, "count": len(store)}
+    if cmd == "aliases":
+        return {"ok": True, "aliases": [a.public_dict() for a in aliases or [] if a.is_active]}
     if cmd == "match":
         domain = request.get("domain", "")
         if not domain:
@@ -370,9 +374,11 @@ def handle(request: dict, store: CredentialStore, aliases: list | None = None) -
                 "aliases": [a.public_dict() for a in matched]}
     if cmd == "totp":
         domain, username = request.get("domain", ""), request.get("username", "")
-        for c in store.match(domain):
-            if c.username == username and c.totp:
-                return {"ok": True, "totp": totp_codes.generate(c.totp)}
+        saved_domain = request.get("credential_domain")
+        matches = [c for c in store.match(domain) if c.username == username and c.totp
+                   and (saved_domain is None or c.domain == saved_domain)]
+        if len(matches) == 1:
+            return {"ok": True, "totp": totp_codes.generate(matches[0].totp)}
         return {"ok": False, "error": "no code for that login"}
     return {"ok": False, "error": f"unknown cmd {cmd!r}"}
 

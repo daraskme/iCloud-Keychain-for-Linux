@@ -74,6 +74,14 @@ def _alias(domain, address="quiet-otter@icloud.com", label="Claude"):
 
 
 class MatchAliasesTests(unittest.TestCase):
+    def test_inactive_aliases_are_never_offered(self):
+        from dataclasses import replace
+        active = _alias("claude.ai")
+        inactive = replace(active, address="inactive@icloud.com", is_active=False)
+        self.assertEqual(host.match_aliases("claude.ai", [inactive]), [])
+        result = host.handle({"cmd": "aliases"}, CredentialStore([]), [active, inactive])
+        self.assertEqual(result["aliases"], [active.public_dict()])
+
     def test_matches_same_domains_match_rule_as_credentials(self):
         aliases = [_alias("claude.ai"), _alias("other.org", address="x@icloud.com")]
         hits = host.match_aliases("www.claude.ai", aliases)

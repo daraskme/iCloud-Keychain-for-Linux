@@ -23,9 +23,14 @@
         dependencies = with python.pkgs; [
           requests srp cryptography pynacl secretstorage pyside6
         ];
-        nativeCheckInputs = [ python.pkgs.pytestCheckHook ];
+        nativeCheckInputs = [ python.pkgs.pytestCheckHook pkgs.nodejs ];
         preCheck = ''
           export QT_QPA_PLATFORM=offscreen
+        '';
+        postCheck = ''
+          node --check extension/content.js
+          node --check extension/popup.js
+          node tests/extension_background.test.mjs
         '';
       };
       pythonEnv = python.withPackages (_: [ icp ]);

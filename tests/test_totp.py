@@ -57,6 +57,20 @@ class WireTests(unittest.TestCase):
         self.assertFalse(handle({"cmd": "totp", "domain": "example.com", "username": "bob"},
                                 self.store)["ok"])
 
+    def test_ambiguous_username_requires_exact_saved_domain(self):
+        duplicate = CredentialStore([
+            Credential("example.com", "alice", "pw", totp=RFC_URI),
+            Credential("login.example.com", "alice", "pw2", totp=RFC_URI)])
+        request = {"cmd": "totp", "domain": "login.example.com", "username": "alice"}
+        self.assertFalse(handle(request, duplicate)["ok"])
+        self.assertTrue(handle({**request, "credential_domain": "example.com"}, duplicate)["ok"])
+
+    def test_notes_and_setup_key_do_not_cross_browser_protocol(self):
+        c = Credential("example.com", "alice", "pw", notes="private note", totp=RFC_URI)
+        result = c.wire_dict()
+        self.assertNotIn("notes", result)
+        self.assertNotIn("secret=", str(result))
+
 
 if __name__ == "__main__":
     unittest.main()
