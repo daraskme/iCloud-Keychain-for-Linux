@@ -8,7 +8,7 @@
       system = "x86_64-linux";
       pkgs = import nixpkgs { inherit system; };
       python = pkgs.python3;
-      icp = python.pkgs.buildPythonApplication {
+      icp = python.pkgs.buildPythonPackage {
         pname = "icp-linux";
         version = "0.0.1";
         src = self;
