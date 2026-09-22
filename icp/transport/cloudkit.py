@@ -25,6 +25,7 @@ VERIFY_TLS = True
 CKCODE_INVOKE_URL = "https://gateway.icloud.com/ckcoderouter/api/client/code/invoke"
 CKDATABASE_SYNC_URL = "https://gateway.icloud.com/ckdatabase/api/client/record/sync"
 CKDATABASE_SAVE_URL = "https://gateway.icloud.com/ckdatabase/api/client/record/save"
+CKDATABASE_DELETE_URL = "https://gateway.icloud.com/ckdatabase/api/client/record/delete"
 CK_APP_INIT_URL = "https://gateway.icloud.com/setup/setup/ck/v1/ckAppInit"
 CK_MME_CLIENT_INFO = ("<MacBookPro18,3> <Mac OS X;13.4.1;22F8> "
                       "<com.apple.cloudkit.CloudKitDaemon/1970 (com.apple.cloudd/1970)>")
@@ -282,3 +283,10 @@ class CloudKitTransport:
             CKDATABASE_SAVE_URL, ckks.OP_TYPE_RECORD_SAVE,
             ckks.FIELD_RECORD_SAVE, record_request_bytes, bundle=SECURITYD_BUNDLE)
         return result.field(ckks.FIELD_RECORD_SAVE) or b""
+
+    def delete_record(self, record_request_bytes: bytes) -> bytes:
+        """LIVE conditional RecordDelete operation. Caller must supply an etagged record ID."""
+        result = self._perform(
+            CKDATABASE_DELETE_URL, ckks.OP_TYPE_RECORD_DELETE,
+            ckks.FIELD_RECORD_DELETE, record_request_bytes, bundle=SECURITYD_BUNDLE)
+        return result.field(ckks.FIELD_RECORD_DELETE) or b""
