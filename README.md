@@ -8,8 +8,8 @@ reverse engineering attempt and **is not affiliated with Apple in any way**.
 
 > **Note:** Most of this project was written with AI assistance (and reviewed by a human).
 > It works with my own Apple account, but that's no guarantee it will work with yours.
-> Your passwords never leave your computer, and nothing is ever changed in your Apple
-> account - `icp` only reads.
+> iCloud Keychain passwords are currently read-only. `icp hme create` and
+> `icp hme edit` explicitly change Hide My Email addresses in your Apple account.
 
 > This is also **untested** with Advanced Data Protection enabled. Any help with this will be appreciated -
 > let me know if you have any issues with ADP enabled (also lmk if it works). Please don't spam escrow attempts!
@@ -69,6 +69,20 @@ Opens a full-screen list - start typing to filter, **Enter** to reveal a passwor
 ```
 icp show github
 ```
+
+Generate a strong random password locally with `icp generate-password`. The default
+is 24 characters; use `--length 32` for a different length. Generation does not
+save the password to iCloud Keychain.
+
+## Hide My Email
+
+After `icp login`, use `icp hme list` to see your addresses. `icp hme create`
+prompts for a label and optional note, generates an address, and reserves it in
+your Apple account. `icp hme edit` lets you select an address and update its
+label or note. A blank answer keeps the existing value; enter `-` to clear a note.
+
+These commands use the saved iCloud web session and may request a separate 2FA
+code the first time. The alias is available on other devices after Apple syncs it.
 
 ## Verification codes
 
@@ -136,6 +150,8 @@ login    sign in, join your iCloud Keychain, and download your passwords
 show     browse and search your passwords and Hide My Email addresses
 sync     refresh your passwords now
 logout   sign out (use --wipe-device to also forget this device)
+generate-password  generate a random password locally
+hme list/create/edit  manage Hide My Email aliases
 ```
 
 ## Credits
