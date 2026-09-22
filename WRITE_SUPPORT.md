@@ -9,8 +9,8 @@ next `icp sync` would replace it with the server snapshot.
 `icp password add`, `edit`, and `delete` now re-fetch live CKKS records, keep each record's raw
 protobuf and change tag, prepares a freshly encrypted item, and sends a
 RecordSave (operation 210) request. It then re-fetches the item to verify the
-edit. It can edit a web login password and, when that login already has a
-`com.apple.password-manager` sidecar, its notes and TOTP enrollment. Creation
+edit. It can edit a web login password, its notes, and TOTP enrollment. If an
+existing login has no metadata sidecar, the first notes/TOTP edit creates one. Creation
 uses `saveSemantics = 2` (`failIfExists`) and creates both a login and metadata
 sidecar. Deletion uses RecordDelete (operation 214) with the current etag in
 field 2 and verifies that both records disappear.
@@ -23,8 +23,7 @@ replay was rejected. This is an observed safety property, not an assumption.
 
 The iPhone/iPad Passwords app has displayed the edited note and TOTP, and a
 newly created login with its note and TOTP. It also stopped displaying a
-deleted disposable login. Creating the first metadata sidecar for an existing
-login remains unimplemented; the `add` path does create one for new logins.
+deleted disposable login. The `add` path creates a sidecar for new logins.
 Multi-record create/delete operations are sequential rather than atomic, so a
 partial failure may require cleanup. A failed sidecar creation attempts to
 delete the login it just created.
@@ -47,8 +46,6 @@ delete the login it just created.
 
 ## Remaining limits
 
-- An existing login that never had a metadata sidecar cannot receive its first
-  note or TOTP through `edit` yet. `add` creates a sidecar for new logins.
 - Creation needs a usable web-login template and metadata template from this
   account. It fails before writing if either is absent.
 - Login and metadata records are created or deleted sequentially. A failed
