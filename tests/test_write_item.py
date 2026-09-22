@@ -4,14 +4,16 @@ import plistlib
 import unittest
 
 from icp.keychain import crypto, pipeline, write
-from icp.proto.codec import Writer
+from icp.proto.codec import Writer, decode_fields, first
 from icp.transport import ckks
 
 
 class WriteItemTests(unittest.TestCase):
     def test_encrypt_updated_item_preserves_metadata_and_round_trips(self):
         key = os.urandom(64)
-        record_id = Writer().message(1, Writer().string(1, "item-1").uint64(2, 1)).finish()
+        zone = ckks.record_zone_identifier("Passwords", "user-1")
+        record_id = (Writer().message(1, Writer().string(1, "item-1").uint64(2, 1))
+                     .message(2, zone).finish())
         fields = [
             ("data", ckks.bytes_value(b"old")),
             ("wrappedkey", ckks.string_value("old-key")),
@@ -38,3 +40,11 @@ class WriteItemTests(unittest.TestCase):
             parent_key_id="class-key")
         self.assertEqual(plistlib.loads(crypto.decrypt_item(
             item_key, updated.get_bytes("data"), aad)), item)
+
+        new_raw = write.encrypt_new_item(record, key, "new-item", item)
+        created = ckks.parse_record(new_raw)
+        self.assertEqual(created.record_name, "new-item")
+        self.assertEqual(created.etag, "")
+        self.assertEqual(pipeline.decrypt_items([created], {"class-key": key}), [item])
+        request = ckks.build_record_create_request(new_raw)
+        self.assertEqual(first(decode_fields(request), 6), 2)
