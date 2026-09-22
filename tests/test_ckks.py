@@ -46,6 +46,11 @@ def _record(record_name, rtype, fields):
     return w.finish()
 
 
+def _etagged_record(record_name, rtype, fields):
+    raw = _record(record_name, rtype, fields)
+    return _proto.Writer().string(1, "change-tag-1").finish() + raw
+
+
 class RequestBuildTests(unittest.TestCase):
     def test_zone_identifier(self):
         raw = ckks.record_zone_identifier("Passwords", "USER-1")
@@ -79,6 +84,28 @@ class RequestBuildTests(unittest.TestCase):
 
 
 class RecordParseTests(unittest.TestCase):
+    def test_replaces_only_requested_field_and_preserves_unknown(self):
+        raw = _etagged_record("item-1", "item", [
+            ("data", _value(bytes_value=b"old")),
+            ("wrappedkey", _value(string_value="old-key")),
+            ("encver", _value(int_value=2)),
+        ]) + _proto.Writer().string(99, "future").finish()
+        parsed = ckks.parse_record(raw)
+        self.assertEqual(parsed.etag, "change-tag-1")
+        changed = ckks.replace_record_fields(parsed, {
+            "data": ckks.bytes_value(b"new"),
+            "wrappedkey": ckks.string_value("new-key"),
+        })
+        again = ckks.parse_record(changed)
+        self.assertEqual(again.get_bytes("data"), b"new")
+        self.assertEqual(again.get_str("wrappedkey"), "new-key")
+        self.assertEqual(again.fields["encver"], 2)
+        self.assertEqual(_proto.first(_proto.decode_fields(changed), 99), b"future")
+        request = ckks.build_record_save_request(changed)
+        self.assertEqual(_proto.first(_proto.decode_fields(request), 1), changed)
+        self.assertEqual(_proto.first_str(_proto.decode_fields(request), 4), "change-tag-1")
+        self.assertEqual(_proto.first(_proto.decode_fields(request), 6), 1)
+
     def test_parse_item_record(self):
         raw = _record("UUID-item", "item", [
             ("wrappedkey", _value(string_value="d3JhcA==")),
