@@ -773,11 +773,67 @@ def cmd_generate_password(args) -> int:
     return 0
 
 
+def cmd_password_edit(args) -> int:
+    """Edit one exact iCloud login with prompts that keep secrets out of shell history."""
+    import fcntl
+    from ..keychain import manager
+    from ..octagon.client import OctagonClient, OctagonError
+    from ..paths import sync_lock_file
+    from ..transport.cloudkit import CloudKitError
+
+    if not (args.password or args.notes or args.totp):
+        ui.err("choose --password, --notes, or --totp")
+        return 2
+    if args.password and (args.notes or args.totp):
+        ui.err("edit the password and metadata in separate commands")
+        return 2
+    password = ui.secret("New password: ") if args.password else None
+    notes = ui.ask("Notes (empty clears): ") if args.notes else None
+    totp_uri = ui.secret("otpauth:// URI (empty clears): ") if args.totp else None
+
+    lock = open(sync_lock_file(), "w")
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        ui.err("another sync or edit is already running")
+        lock.close()
+        return 1
+    try:
+        s = session.load()
+        if not s or not (s.get("octagon") or {}).get("peer_id"):
+            ui.err("not joined to iCloud Keychain - run: icp login")
+            return 1
+        device = Device.load_or_create()
+        anisette = Anisette(args.anisette)
+        _ensure_fresh_tokens(s, device, anisette, interactive=sys.stdin.isatty())
+        session.save(s)
+        client = OctagonClient(s, device, anisette)
+        session.save(s)
+        if password is not None:
+            manager.edit_password(client, args.site, args.username, password)
+        else:
+            manager.edit_metadata(client, args.site, args.username,
+                                  notes=notes, totp_uri=totp_uri)
+        ui.out("Saved and verified on iCloud.")
+        try:
+            client.sync_and_decrypt()
+        except (OctagonError, CloudKitError) as e:
+            ui.warn(f"iCloud saved the edit, but local vault refresh failed: {e}")
+        return 0
+    except (manager.PasswordEditError, ValueError, OctagonError, CloudKitError,
+            icloud.ICloudError, AnisetteError, GSAError) as e:
+        ui.err(str(e))
+        return 1
+    finally:
+        fcntl.flock(lock, fcntl.LOCK_UN)
+        lock.close()
+
+
 def main(argv=None) -> int:
     logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
     p = argparse.ArgumentParser(
         prog="icp",
-        description="iCloud Passwords for Linux - read-only iCloud Keychain autofill")
+        description="iCloud Passwords for Linux")
     p.add_argument("--anisette",
                    help="anisette server URL (default: $ICP_ANISETTE_URL or localhost:6969)")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -812,6 +868,16 @@ def main(argv=None) -> int:
     gp = sub.add_parser("generate-password", help="generate a strong random password")
     gp.add_argument("--length", type=int, default=24, help="password length (12-128)")
     gp.set_defaults(func=cmd_generate_password)
+
+    pp = sub.add_parser("password", help="edit an existing iCloud web login")
+    psub = pp.add_subparsers(dest="password_cmd", required=True)
+    pe = psub.add_parser("edit", help="edit password, notes, or verification code")
+    pe.add_argument("site", help="exact site saved in iCloud Passwords")
+    pe.add_argument("username", help="exact username saved in iCloud Passwords")
+    pe.add_argument("--password", action="store_true", help="prompt for a new password")
+    pe.add_argument("--notes", action="store_true", help="prompt for notes")
+    pe.add_argument("--totp", action="store_true", help="prompt for an otpauth:// URI")
+    pe.set_defaults(func=cmd_password_edit)
 
     hp = sub.add_parser("hme", help="manage Hide My Email addresses")
     hsub = hp.add_subparsers(dest="hme_cmd", required=True)
