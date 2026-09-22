@@ -68,7 +68,15 @@ class GSAClient:
             const.GSA_ENDPOINT, headers=headers, data=plist.dumps(body),
             verify=False, timeout=10,
         )
-        return plist.loads(resp.content)["Response"]
+        try:
+            result = plist.loads(resp.content)
+        except plist.InvalidFileException as e:
+            content_type = resp.headers.get("Content-Type", "unknown")
+            raise GSAError(
+                f"Apple GSA returned HTTP {resp.status_code} ({content_type}) "
+                "instead of a plist response"
+            ) from e
+        return result["Response"]
 
     def authenticate(self, username: str, password: str, stage: str) -> tuple[dict, dict]:
         usr = srp.User(username, bytes(), hash_alg=srp.SHA256, ng_type=srp.NG_2048)
