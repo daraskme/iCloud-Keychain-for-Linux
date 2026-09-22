@@ -130,6 +130,27 @@ try {
   }
   assert.deepEqual(await values(automaticPage), [credential.username, credential.password]);
   console.log("PASS automatic filling in a newly opened page without popup interaction");
+  if (process.env.ICP_TEST_WORKER_IDLE === "1") {
+    // DevTools attachment prevents suspension, so detach before observing natural idle.
+    const oldWorker = worker.target;
+    await call("Target.detachFromTarget", {sessionId:sw});
+    let stopped = false;
+    for (let i=0; i<50; i++) {
+      await sleep(1000);
+      const targets = (await call("Target.getTargets")).targetInfos;
+      if (!targets.some(t=>t.targetId === oldWorker)) { stopped = true; break; }
+    }
+    assert.equal(stopped, true, "Service worker suspends naturally while idle");
+    console.log("PASS service worker suspends naturally while idle");
+    const resumedPage = await openPage(url);
+    for (let i=0; i<150; i++) {
+      if ((await values(resumedPage))[1] === credential.password) break;
+      await sleep(20);
+    }
+    assert.deepEqual(await values(resumedPage), [credential.username, credential.password]);
+    worker = await connectWorker(oldWorker); sw = worker.session;
+    console.log("PASS automatic filling wakes the stopped worker without extension reload");
+  }
   await evaluate(sw, "chrome.storage.local.set({autofillEnabled:false})");
   await call("Page.bringToFront", {}, page);
   await evaluate(page, "document.querySelectorAll('input').forEach(field=>field.value='')");
@@ -159,7 +180,7 @@ try {
   assert.equal((await fill()).ok, false);
   assert.deepEqual(await values(framed), ["", ""]);
   console.log("PASS navigation to another origin never receives credentials");
-  console.log("6 real extension connection scenarios passed");
+  console.log(`${process.env.ICP_TEST_WORKER_IDLE === "1" ? 8 : 6} real extension connection scenarios passed`);
 } finally {
   try { await call("Browser.close"); } catch (_) {}
   browser.kill("SIGTERM"); server.close();

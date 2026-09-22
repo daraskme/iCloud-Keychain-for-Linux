@@ -212,11 +212,18 @@ reconnects to existing tabs automatically, including after a page reload or an
 extension update. It checks the current document before sending login data.
 If Chrome denies access, allow the extension on that site in its **Site access** setting.
 
+`service worker (inactive)` in Chrome's extension manager is normal: Chrome stops
+the worker after about 30 idle seconds and wakes it when a message arrives.
+The extension does not need to be reloaded for this. See the
+[Chrome service worker lifecycle](https://developer.chrome.com/docs/extensions/develop/concepts/service-workers/lifecycle).
+
 Browser regression tests use an isolated profile and synthetic credentials:
 `CHROME_BIN=google-chrome node tests/browser_autofill.mjs` checks field detection;
 `CHROME_BIN=google-chrome node tests/extension_connection.mjs` loads the actual
 extension and checks message delivery and recovery in Chrome. The Nix package also
 runs the native-host tests and the background-worker authorization tests.
+Set `ICP_TEST_WORKER_IDLE=1` for an additional real idle/suspend/wake test (about
+30–50 seconds); it detaches DevTools so the worker can actually go inactive.
 
 ## Keeping your passwords up to date
 
