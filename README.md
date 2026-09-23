@@ -66,7 +66,7 @@ Nix package includes a desktop entry for Plasma and other Linux desktops.
 The Japanese GUI provides:
 
 - Searchable password and Hide My Email lists.
-- Add/delete web logins; edit passwords, multiline notes, and TOTP setup keys.
+- Add/delete web logins; edit sites, usernames, passwords, multiline notes, and TOTP setup keys.
 - Strong password generation with a selectable length (12–128 characters).
 - Live verification codes, a countdown, and copy buttons. Paste the website's
   setup key or `otpauth://totp/…` URI in the editor, not a six-digit code.
@@ -75,7 +75,9 @@ The Japanese GUI provides:
 
 Passwords and setup keys are masked initially. Copies are marked as secret for
 KDE's clipboard manager and cleared after 30 seconds if the clipboard still
-contains that copy. Editing an existing login keeps its site and username fixed.
+contains that copy. Existing sites and usernames can be edited in the password
+dialog. Saving updates the existing iCloud login and its notes/TOTP metadata,
+checks for duplicate destinations and stale values, and refreshes the local vault.
 Clearing its notes or TOTP field and saving removes that metadata from iCloud.
 The GUI uses the same encrypted local store and saved login as the CLI. Initial
 login or renewed Apple two-factor approval still uses `icp login` in a terminal.

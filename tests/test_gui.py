@@ -72,10 +72,25 @@ class GuiTests(unittest.TestCase):
         dialog.submit()
         self.assertEqual(drafts[0].notes, "一行目\n二行目")
         self.assertEqual(drafts[0].password, CREDENTIAL.password)
-        self.assertTrue(dialog.site.isReadOnly())
+        self.assertFalse(dialog.site.isReadOnly())
+        self.assertFalse(dialog.username.isReadOnly())
         dialog.totp.edit.clear()
         dialog.submit()
         self.assertEqual(drafts[1].totp, "")
+        dialog.close()
+
+    def test_editor_submits_changed_identity_and_preserves_secrets(self):
+        dialog = PasswordDialog(self.window, CREDENTIAL)
+        drafts = []
+        dialog.submitted.connect(drafts.append)
+        dialog.site.setText("https://new.example/login")
+        dialog.username.setText("bob")
+        dialog.submit()
+        self.assertEqual((drafts[0].site, drafts[0].username), ("new.example", "bob"))
+        self.assertEqual(drafts[0].password, CREDENTIAL.password)
+        self.assertEqual(drafts[0].totp, CREDENTIAL.totp)
+        self.assertEqual(drafts[0].notes, CREDENTIAL.notes)
+        self.assertEqual(dialog.saved_identity, ("new.example", "bob"))
         dialog.close()
 
     def test_generator_and_alias_dialog(self):

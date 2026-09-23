@@ -156,8 +156,6 @@ class PasswordDialog(SaveDialog):
         self.site.setPlaceholderText("example.com")
         self.username = QLineEdit(original.username if original else "")
         self.username.setPlaceholderText("ユーザー名またはメールアドレス")
-        for field in (self.site, self.username):
-            field.setReadOnly(original is not None)
         self.password = SecretField(original.password if original else "")
         self.totp = SecretField(original.totp if original else "")
         self.totp.edit.setPlaceholderText("設定キー または otpauth://totp/…")
@@ -189,8 +187,10 @@ class PasswordDialog(SaveDialog):
 
     def submit(self):
         try:
-            site = self.original.domain if self.original else normalize_site(self.site.text())
-            username = self.original.username if self.original else self.username.text().strip()
+            site = (self.original.domain if self.original and self.site.text() == self.original.domain
+                    else normalize_site(self.site.text()))
+            username = (self.original.username if self.original and self.username.text() == self.original.username
+                        else self.username.text().strip())
             if not username or not self.password.text():
                 raise ValueError("ユーザー名とパスワードを入力してください。")
             draft = PasswordDraft(site, username, self.password.text(), self.notes.toPlainText(),

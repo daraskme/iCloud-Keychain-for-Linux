@@ -63,6 +63,19 @@ class ServiceTests(unittest.TestCase):
         client.update_metadata.assert_not_called()
         client.reserve.assert_not_called()
 
+    def test_changed_identity_uses_original_for_lookup_and_refreshes_vault(self):
+        service = Service()
+        client = Mock()
+        service._client = Mock(return_value=client)
+        service.load = Mock(return_value=Snapshot())
+        original = Credential("old.example", "alice", "old", notes="memo")
+        with patch("icp.gui.service.operation_lock", contextlib.nullcontext), patch.object(manager, "rename_password") as rename:
+            service.save_password(PasswordDraft("new.example", "bob", "new", notes="memo"), original)
+        rename.assert_called_once_with(client, "old.example", "alice", "new.example", "bob",
+                                       password="new", notes="memo", totp_uri="",
+                                       expected_values=("old", "memo", ""))
+        client.sync_and_decrypt.assert_called_once()
+
     def test_alias_create_requires_server_readback_and_active_state(self):
         alias = HmeAlias("id", "alias@example.invalid", "テスト", "メモ", "", True, "", 0)
         client = Mock()

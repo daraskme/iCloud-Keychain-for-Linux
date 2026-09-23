@@ -126,8 +126,6 @@ class Service:
             raise ValueError("サイト・ユーザー名・パスワードを入力してください。")
         if draft.totp:
             totp_from_uri(draft.totp)
-        if original and (draft.site, draft.username) != (original.domain, original.username):
-            raise ValueError("既存項目のサイト・ユーザー名は変更できません。")
         with operation_lock():
             client = self._client()
             password_saved = False
@@ -135,6 +133,11 @@ class Service:
                 if original is None:
                     manager.create_password(client, draft.site, draft.username, draft.password,
                                             notes=draft.notes, totp_uri=draft.totp)
+                elif (draft.site, draft.username) != (original.domain, original.username):
+                    manager.rename_password(
+                        client, original.domain, original.username, draft.site, draft.username,
+                        password=draft.password, notes=draft.notes, totp_uri=draft.totp,
+                        expected_values=(original.password, original.notes, original.totp))
                 else:
                     if draft.password != original.password:
                         manager.edit_password(client, draft.site, draft.username, draft.password,

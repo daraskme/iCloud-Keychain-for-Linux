@@ -132,6 +132,92 @@ def _verify(client, record_name: str, class_keys: dict, predicate) -> None:
         raise PasswordEditError("save returned, but iCloud read-back did not match")
 
 
+def rename_password(client, site: str, username: str, new_site: str, new_username: str,
+                    *, password: str, notes: str, totp_uri: str,
+                    expected_values: tuple[str, str, str]) -> None:
+    """Update the existing login and associated metadata without changing record IDs.
+
+    CloudKit writes are conditional but not atomic across records. On failure, read
+    back every attempted write and restore only items that still match our change.
+    This also handles a response lost after a successful server write.
+    """
+    if not new_site or not new_username or not password:
+        raise PasswordEditError("サイト・ユーザー名・パスワードを入力してください。")
+    records, class_keys = _snapshot(client)
+    login, sidecar = _target(records, class_keys, site, username)
+    old_password, old_notes, old_totp = expected_values
+    if (login[1].get("v_Data") != old_password.encode("utf-8") or
+            _metadata_values(sidecar) != (old_notes, old_totp)):
+        raise PasswordEditError("別の端末で変更されています。同期してから編集してください。")
+    targets = [login, sidecar] if sidecar else [login]
+    target_names = {r.record_name for r, _ in targets}
+    for record in records.get("item", []):
+        plain = pipeline.decrypt_items([record], class_keys)
+        if (record.record_name not in target_names and plain and
+                (plain[0].get("srvr"), plain[0].get("acct")) == (new_site, new_username)):
+            raise PasswordEditError("変更先のサイト・ユーザー名は既に登録されています。")
+
+    # Validate metadata and prepare all encrypted writes before contacting the server.
+    payload = sidecar[1]["v_Data"] if sidecar else plistlib.dumps({}, fmt=plistlib.FMT_BINARY)
+    payload = edit_sidecar(payload, notes=notes if notes != old_notes else None,
+                           totp_uri=totp_uri if totp_uri != old_totp else None)
+    plans = []
+    for record, item in targets:
+        changed = dict(item)
+        changed.update(srvr=new_site, acct=new_username,
+                       mdat=datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None))
+        if item.get("agrp") == "com.apple.password-manager":
+            changed["v_Data"] = payload
+            changed["labl"] = f"Password Manager Metadata: {new_site} ({new_username})"
+        else:
+            changed["v_Data"] = password.encode("utf-8")
+            if item.get("labl") == site:
+                changed["labl"] = new_site
+        raw = write.encrypt_updated_item(record, class_keys[record.get_str("parentkeyref")], changed)
+        plans.append((record.record_name, item, changed, ckks.build_record_save_request(raw)))
+    if sidecar is None and (notes or totp_uri):
+        template = _template(records, class_keys, "com.apple.password-manager")
+        name = str(uuid.uuid4()).upper()
+        item = _new_item(template[1], new_site, new_username, payload, metadata=True)
+        raw = write.encrypt_new_item(template[0], class_keys[template[0].get_str("parentkeyref")], name, item)
+        plans.append((name, None, item, ckks.build_record_create_request(raw)))
+    attempted = []
+    try:
+        for name, before, after, request in plans:
+            attempted.append((name, before, after))
+            client.transport.save_record(request)
+            _verify(client, name, class_keys, lambda current, expected=after: current == expected)
+    except Exception as exc:
+        rollback_failed = False
+        for name, before, after in reversed(attempted):
+            try:
+                fresh = client.sync_keychain(zones=("Passwords", "Manatee"), strict=True)
+                matches = [r for r in fresh.get("item", []) if r.record_name == name]
+                if not matches and before is None:
+                    continue
+                if len(matches) != 1:
+                    raise PasswordEditError("record missing during rollback")
+                current = pipeline.decrypt_items(matches, class_keys)
+                if current == [before]:
+                    continue
+                if current != [after]:
+                    raise PasswordEditError("record changed during rollback")
+                record = matches[0]
+                if before is None:
+                    client.transport.delete_record(ckks.build_record_delete_request(record))
+                    _verify_absent(client, name)
+                else:
+                    raw = write.encrypt_updated_item(record, class_keys[record.get_str("parentkeyref")], before)
+                    client.transport.save_record(ckks.build_record_save_request(raw))
+                    _verify(client, name, class_keys, lambda item, expected=before: item == expected)
+            except Exception:
+                rollback_failed = True
+        if rollback_failed:
+            raise PasswordEditError(
+                "保存に失敗し、一部の変更を元に戻せませんでした。再保存せず、同期して旧・新の項目を確認してください。") from exc
+        raise PasswordEditError("保存に失敗しました。変更は元に戻しました。同期してから再実行してください。") from exc
+
+
 def _template(records, class_keys, group: str):
     for record in records.get("item", []):
         if record.fields.get("encver") != 2:

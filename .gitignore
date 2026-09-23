@@ -8,3 +8,19 @@ dist/
 config/
 *.enc
 master.key
+# Runtime data and local authentication material must never be published.
+.env
+.env.*
+device.json
+session.json
+session-*.json
+vault.json
+aliases.json
+*.key
+*.pem
+*.p12
+*.pfx
+*.log
+backups/
+result
+result-*

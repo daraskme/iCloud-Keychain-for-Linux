@@ -46,6 +46,21 @@ delete the login it just created.
 
 ## Remaining limits
 
+- GUI identity edits update `srvr` and `acct` on the existing login and its
+  metadata sidecar, retaining record IDs, unknown fields, and unchanged secrets.
+  Destination collisions and stale password/metadata values are rejected before
+  writes. Each update uses the current etag and verifies the decrypted read-back.
+  If a write or verification fails, attempted records are fetched again and
+  restored only if they still equal this operation's candidate values. Concurrent
+  edits are never overwritten by rollback. A failed rollback is reported explicitly.
+- Identity changes span sequential server writes, not a server transaction.
+  Process termination or power loss between writes can leave a partial rename;
+  there is no durable recovery journal. Sync and inspect both identities before
+  retrying after an interrupted save. Destination checks are snapshot checks;
+  another device creating a duplicate during the operation cannot be prevented.
+- Identity editing has synthetic encrypted-server and Qt tests. Live iCloud
+  rename and Apple-device display have not been validated for this change.
+
 - Creation needs a usable web-login template and metadata template from this
   account. It fails before writing if either is absent.
 - Login and metadata records are created or deleted sequentially. A failed
